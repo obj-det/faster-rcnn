@@ -135,6 +135,7 @@ def matching_and_sampling(all_proposals, all_scores, gt, num_samples):
         #     max_ious[i] = max_iou
         #     gt_assignment[i] = idx
         ious = compute_iou_vectorized(batch_proposals, gt_b)  # [N_b, M_b]
+        print(ious.size())
         max_ious, gt_assignment = ious.max(dim=1)  # max_ious: [N_b], gt_assignment: [N_b]
 
         # Initialize labels for proposals (default background: label 0).
@@ -194,6 +195,29 @@ def matching_and_sampling(all_proposals, all_scores, gt, num_samples):
     sampled_indices = torch.cat(sampled_indices_list, dim=0)
 
     return sampled_proposals, sampled_scores, sampled_labels, sampled_bbox_targets, sampled_indices
+
+def add_batch_idx_to_targets(targets):
+    """
+    Add batch index as the first column to each target's bounding boxes.
+
+    Args:
+        targets (list of dict): Each dict has at least the key "boxes", a tensor of shape [num_boxes, 4].
+
+    Returns:
+        list of dict: A new list of target dictionaries with "boxes" of shape [num_boxes, 5],
+                      where the first column is the batch index.
+    """
+    new_targets = [
+        {**target, "boxes_with_label": torch.cat([
+            torch.full((target["boxes_with_label"].shape[0], 1),
+                       i,
+                       dtype=target["boxes_with_label"].dtype,
+                       device=target["boxes_with_label"].device),
+            target["boxes_with_label"]
+        ], dim=1)}
+        for i, target in enumerate(targets)
+    ]
+    return new_targets
 
 def rpn_loss_fn(sampled_deltas, sampled_scores, sampled_labels, sampled_bbox_targets):
     cls_loss = F.cross_entropy(sampled_scores, sampled_labels)
