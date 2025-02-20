@@ -164,6 +164,16 @@ def decode_boxes(anchors, deltas, im_shape):
     
     return pred_boxes
 
+def collect_rpn_deltas(rpn_deltas):
+    B, C, H, W = rpn_deltas.shape
+    num_anchors = C // 4
+    rpn_deltas = rpn_deltas.view(B, num_anchors, 4, H, W)
+    rpn_deltas = rpn_deltas.permute(0, 3, 4, 1, 2).contiguous().view(B, -1, 4)
+    batch_indices = torch.arange(B, dtype=rpn_deltas.dtype, device=rpn_deltas.device).view(B, 1)
+    batch_indices = batch_indices.expand(B, rpn_deltas.size(1)).unsqueeze(2)
+    rpn_deltas = torch.cat([batch_indices, rpn_deltas], dim=2).view(-1, 5)
+    return rpn_deltas
+
 def generate_rois(rpn_deltas, shifted_anchors, im_shape):
     """
     Generate candidate RoIs by applying predicted bounding-box deltas to the anchors.
