@@ -5,7 +5,7 @@ def get_scores(rpn_output):
     B, S, H, W = rpn_output.size()
     scores = rpn_output.view(B, -1, 2, H, W)
     scores = scores.permute(0, 3, 4, 1, 2).contiguous().view(B, -1, 2)
-    return scores
+    return scores.view(-1, 2)
 
 def nms(rois, scores, iou_threshold=0.7, score_threshold=0.0):
     keep_initial = scores >= score_threshold
