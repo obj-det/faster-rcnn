@@ -5,8 +5,8 @@ import torch.nn.functional as F
 class FPN(nn.Module):
     def __init__(self, out_channels=256, in_channels=[256, 512, 512]):
         super(FPN, self).__init__()
-        self.lat_convs = [nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1) for c in in_channels]
-        self.smooth_convs = [nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=3, padding=1) for _ in range(len(in_channels)-1)]
+        self.lat_convs = nn.ModuleList([nn.Conv2d(in_channels=c, out_channels=out_channels, kernel_size=1) for c in in_channels])
+        self.smooth_convs = nn.ModuleList([nn.Conv2d(in_channels=out_channels, out_channels=out_channels, kernel_size=3, padding=1) for _ in range(len(in_channels)-1)])
 
     
     def forward(self, features_map):
