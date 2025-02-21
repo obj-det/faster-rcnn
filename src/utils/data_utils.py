@@ -84,3 +84,31 @@ def collate_fn(batch):
     images, targets = list(zip(*batch))
     images = torch.stack(images, dim=0)
     return images, targets
+
+def filter_bboxes_in_sample(sample):
+    img_width = sample["width"]
+    img_height = sample["height"]
+    
+    valid_bboxes = []
+    valid_categories = []
+    valid_ids = [] if "id" in sample["objects"] else None
+    valid_areas = [] if "area" in sample["objects"] else None
+    
+    for i, bbox in enumerate(sample["objects"]["bbox"]):
+        x, y, w, h = bbox
+        if all([x >= 0 and x <= img_width for x in [x, x+w]]) and all([y >= 0 and y <= img_height for y in [y, y+h]]):
+            valid_bboxes.append(bbox)
+            valid_categories.append(sample["objects"]["category"][i])
+            if valid_ids is not None:
+                valid_ids.append(sample["objects"]["id"][i])
+            if valid_areas is not None:
+                valid_areas.append(sample["objects"]["area"][i])
+                
+    sample["objects"]["bbox"] = valid_bboxes
+    sample["objects"]["category"] = valid_categories
+    if valid_ids is not None:
+        sample["objects"]["id"] = valid_ids
+    if valid_areas is not None:
+        sample["objects"]["area"] = valid_areas
+    
+    return sample

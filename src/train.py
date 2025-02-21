@@ -13,6 +13,12 @@ ds = datasets.load_dataset("rishitdagli/cppe-5")
 train_ds = ds['train']
 val_ds = ds['test']
 
+mapped_train_ds = train_ds.map(filter_bboxes_in_sample)
+filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0)
+
+mapped_val_ds = val_ds.map(filter_bboxes_in_sample)
+filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0)
+
 import torch.optim as optim
 
 output_layer_map = {
@@ -86,9 +92,9 @@ checkpoint_dir = 'checkpoints'
 if not os.path.exists(checkpoint_dir):
     os.makedirs(checkpoint_dir)
 
-train_dataset = DetectionDataset(train_ds, transform_pipeline, preprocess)
+train_dataset = DetectionDataset(filtered_train_ds, transform_pipeline, preprocess)
 train_dataloader = DataLoader(train_dataset, collate_fn=collate_fn, batch_size=4, shuffle=True)
-val_dataset = DetectionDataset(val_ds, transform_pipeline, preprocess)
+val_dataset = DetectionDataset(filtered_val_ds, transform_pipeline, preprocess)
 val_dataloader = DataLoader(val_dataset, collate_fn=collate_fn, batch_size=4, shuffle=False)
 
 img_shape = (600, 600)
