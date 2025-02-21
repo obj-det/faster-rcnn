@@ -96,7 +96,7 @@ def filter_bboxes_in_sample(sample):
     
     for i, bbox in enumerate(sample["objects"]["bbox"]):
         x, y, w, h = bbox
-        if all([x >= 0 and x <= img_width for x in [x, x+w]]) and all([y >= 0 and y <= img_height for y in [y, y+h]]):
+        if all([el >= 0 and el <= img_width for el in [x, x+w]]) and all([el >= 0 and el <= img_height for el in [y, y+h]]):
             valid_bboxes.append(bbox)
             valid_categories.append(sample["objects"]["category"][i])
             if valid_ids is not None:

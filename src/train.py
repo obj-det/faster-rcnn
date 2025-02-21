@@ -13,11 +13,11 @@ ds = datasets.load_dataset("rishitdagli/cppe-5")
 train_ds = ds['train']
 val_ds = ds['test']
 
-mapped_train_ds = train_ds.map(filter_bboxes_in_sample)
-filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0)
+mapped_train_ds = train_ds.map(filter_bboxes_in_sample, load_from_cache_file=False)
+filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
 
-mapped_val_ds = val_ds.map(filter_bboxes_in_sample)
-filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0)
+mapped_val_ds = val_ds.map(filter_bboxes_in_sample, load_from_cache_file=False)
+filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
 
 import torch.optim as optim
 
