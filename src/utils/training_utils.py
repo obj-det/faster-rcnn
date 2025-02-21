@@ -1,5 +1,9 @@
+from tqdm import tqdm
 import torch
 import torch.nn.functional as F
+
+from src.utils.anchor_utils import *
+from src.utils.roi_utils import *
 
 def compute_iou(box, boxes):
     """
@@ -135,7 +139,7 @@ def matching_and_sampling(all_proposals, all_scores, gt, num_samples):
         #     max_ious[i] = max_iou
         #     gt_assignment[i] = idx
         ious = compute_iou_vectorized(batch_proposals, gt_b)  # [N_b, M_b]
-        print(ious.size())
+        # print(ious.size())
         max_ious, gt_assignment = ious.max(dim=1)  # max_ious: [N_b], gt_assignment: [N_b]
 
         # Initialize labels for proposals (default background: label 0).
@@ -256,3 +260,275 @@ def det_loss_fn(sampled_bbox_preds, sampled_scores, sampled_labels, sampled_bbox
         loss_reg = torch.tensor(0.0, device=sampled_scores.device)
     
     return cls_loss, loss_reg
+
+def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, device,
+               layer_to_shifted_anchors, img_shape, num_classes, pooled_height, pooled_width, train_logger):
+    """
+    Unified training loop for the entire detection network using a single optimizer,
+    with logging of metrics to a file.
+    
+    Args:
+        num_epochs (int): Number of epochs.
+        dataloader (DataLoader): Training data loader.
+        backbone (nn.Module): Backbone network.
+        fpn (nn.Module): Feature Pyramid Network.
+        rpn (nn.Module): Region Proposal Network.
+        head (nn.Module): Detection head.
+        optimizer (Optimizer): Single optimizer for all parameters.
+        device (torch.device): The computation device.
+        layer_to_shifted_anchors (dict): Precomputed shifted anchors per FPN level.
+        img_shape (tuple): The input image dimensions.
+        num_classes (int): Number of object classes.
+    """
+    backbone.train()
+    fpn.train()
+    rpn.train()
+    head.train()
+
+    for epoch in range(num_epochs):
+        for i, (images, targets) in enumerate(tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")):
+            # Move images and targets to the device
+            images = images.to(device)
+            targets = add_batch_idx_to_targets(targets)
+            gt = torch.cat([t['boxes_with_label'] for t in targets], dim=0).to(device)
+            rpn_gt = gt.clone()
+            # Convert labels to binary for the RPN (foreground vs background)
+            rpn_gt[:, 5] = (rpn_gt[:, 5] > 0).long()
+
+            # Forward pass: Backbone -> FPN.
+            features = backbone(images)
+            fpn_features = fpn(features)
+
+            # Forward pass through the RPN at each FPN level.
+            rpn_out = {}
+            for k, feature_map in fpn_features.items():
+                rpn_out[k] = rpn(feature_map)
+            sorted_rpn_keys = sorted(rpn_out.keys())
+
+            # Aggregate RPN outputs.
+            all_rpn_deltas = torch.cat(
+                [collect_rpn_deltas(rpn_out[k][1]) for k in sorted_rpn_keys], dim=0
+            )
+            rois = torch.cat(
+                [generate_rois(rpn_out[k][1], layer_to_shifted_anchors[k], img_shape)
+                 for k in sorted_rpn_keys], dim=0
+            )
+            scores = torch.cat(
+                [get_scores(rpn_out[k][0]) for k in sorted_rpn_keys], dim=0
+            )
+
+            # Matching and sampling for RPN training.
+            (rpn_sampled_proposals, rpn_sampled_scores, rpn_sampled_labels,
+             rpn_sampled_bbox_targets, rpn_sampled_indices) = matching_and_sampling(
+                 rois, scores, rpn_gt, 128
+             )
+            rpn_sampled_deltas = all_rpn_deltas[rpn_sampled_indices]
+
+            # Process proposals for the detection head.
+            unique_batches = rois[:, 0].unique()
+            all_proposals = []
+            all_scores = []
+            for batch_idx in unique_batches:
+                batch_mask = rois[:, 0] == batch_idx
+                batch_rois = rois[batch_mask]
+                batch_scores = scores[batch_mask]
+
+                # Apply Non-Maximum Suppression (NMS) per batch.
+                keep = nms(batch_rois, batch_scores[:, 1])
+                batch_rois = batch_rois[keep]
+                batch_scores = batch_scores[keep]
+
+                # Sort proposals by score.
+                _, sorted_indices = torch.sort(batch_scores[:, 1], descending=True)
+                sorted_proposals = batch_rois[sorted_indices]
+                sorted_scores = batch_scores[sorted_indices]
+
+                K = 2000  # Adjust K based on your requirements.
+                topk_proposals = sorted_proposals[:K]
+                topk_scores = sorted_scores[:K]
+
+                all_proposals.append(topk_proposals)
+                all_scores.append(topk_scores)
+
+            all_proposals = torch.cat(all_proposals, dim=0).detach()
+            all_scores = torch.cat(all_scores, dim=0).detach()
+
+            # Matching and sampling for the detection head.
+            (sampled_proposals, sampled_scores, sampled_labels,
+             sampled_bbox_targets, _) = matching_and_sampling(
+                 all_proposals, all_scores, gt, 128
+             )
+
+            # ROI Align: pool features corresponding to the proposals.
+            levels = sorted([int(x[-1]) for x in rpn_out.keys()])
+            aligned_proposals = perform_roi_align(
+                levels, sampled_proposals, fpn_features,
+                pooled_height, pooled_width, img_shape
+            )
+
+            # Forward pass through the detection head.
+            cls_scores, bbox_deltas = head(aligned_proposals)
+
+            # Compute losses.
+            rpn_cls_loss, rpn_bbox_loss = rpn_loss_fn(
+                rpn_sampled_deltas, rpn_sampled_scores,
+                rpn_sampled_labels, rpn_sampled_bbox_targets
+            )
+            det_cls_loss, det_bbox_loss = det_loss_fn(
+                bbox_deltas, cls_scores,
+                sampled_labels, sampled_bbox_targets, num_classes
+            )
+            total_loss = rpn_cls_loss + rpn_bbox_loss + det_cls_loss + det_bbox_loss
+
+            # Backpropagation and parameter update.
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+
+            # Build log message
+            log_message = (
+                f"Epoch: {epoch+1}, Iteration: {i+1}, Total Loss: {total_loss.item():.4f}, "
+                f"RPN_cls: {rpn_cls_loss.item():.4f}, RPN_bbox: {rpn_bbox_loss.item():.4f}, "
+                f"DET_cls: {det_cls_loss.item():.4f}, DET_bbox: {det_bbox_loss.item():.4f}"
+            )
+            # Log to file
+            train_logger.info(log_message)
+
+def validation_loop(dataloader, backbone, fpn, rpn, head, device,
+                    layer_to_shifted_anchors, img_shape, num_classes,
+                    pooled_height, pooled_width, val_logger):
+    """
+    Validation loop for the detection network. Computes the losses on the validation set and logs
+    metrics for each iteration and an average loss at the end.
+    
+    Args:
+        dataloader (DataLoader): Validation data loader.
+        backbone (nn.Module): Backbone network.
+        fpn (nn.Module): Feature Pyramid Network.
+        rpn (nn.Module): Region Proposal Network.
+        head (nn.Module): Detection head.
+        device (torch.device): The computation device.
+        layer_to_shifted_anchors (dict): Precomputed shifted anchors per FPN level.
+        img_shape (tuple): The input image dimensions.
+        num_classes (int): Number of object classes.
+        pooled_height (int): Height for ROI Align.
+        pooled_width (int): Width for ROI Align.
+    """
+    backbone.eval()
+    fpn.eval()
+    rpn.eval()
+    head.eval()
+    
+    total_loss = 0.0
+    total_batches = 0
+
+    # Disable gradient computation for validation
+    with torch.no_grad():
+        for i, (images, targets) in enumerate(tqdm(dataloader, desc="Validation")):
+            # Move images and targets to the device
+            images = images.to(device)
+            targets = add_batch_idx_to_targets(targets)
+            gt = torch.cat([t['boxes_with_label'] for t in targets], dim=0).to(device)
+            rpn_gt = gt.clone()
+            # Convert labels to binary for the RPN (foreground vs background)
+            rpn_gt[:, 5] = (rpn_gt[:, 5] > 0).long()
+
+            # Forward pass: Backbone -> FPN.
+            features = backbone(images)
+            fpn_features = fpn(features)
+
+            # Forward pass through the RPN at each FPN level.
+            rpn_out = {}
+            for k, feature_map in fpn_features.items():
+                rpn_out[k] = rpn(feature_map)
+            sorted_rpn_keys = sorted(rpn_out.keys())
+
+            # Aggregate RPN outputs.
+            all_rpn_deltas = torch.cat(
+                [collect_rpn_deltas(rpn_out[k][1]) for k in sorted_rpn_keys], dim=0
+            )
+            rois = torch.cat(
+                [generate_rois(rpn_out[k][1], layer_to_shifted_anchors[k], img_shape)
+                 for k in sorted_rpn_keys], dim=0
+            )
+            scores = torch.cat(
+                [get_scores(rpn_out[k][0]) for k in sorted_rpn_keys], dim=0
+            )
+
+            # Matching and sampling for RPN training.
+            (rpn_sampled_proposals, rpn_sampled_scores, rpn_sampled_labels,
+             rpn_sampled_bbox_targets, rpn_sampled_indices) = matching_and_sampling(
+                 rois, scores, rpn_gt, 128
+             )
+            rpn_sampled_deltas = all_rpn_deltas[rpn_sampled_indices]
+
+            # Process proposals for the detection head.
+            unique_batches = rois[:, 0].unique()
+            all_proposals = []
+            all_scores = []
+            for batch_idx in unique_batches:
+                batch_mask = rois[:, 0] == batch_idx
+                batch_rois = rois[batch_mask]
+                batch_scores = scores[batch_mask]
+
+                # Apply Non-Maximum Suppression (NMS) per batch.
+                keep = nms(batch_rois, batch_scores[:, 1])
+                batch_rois = batch_rois[keep]
+                batch_scores = batch_scores[keep]
+
+                # Sort proposals by score.
+                _, sorted_indices = torch.sort(batch_scores[:, 1], descending=True)
+                sorted_proposals = batch_rois[sorted_indices]
+                sorted_scores = batch_scores[sorted_indices]
+
+                K = 2000  # Adjust K based on your requirements.
+                topk_proposals = sorted_proposals[:K]
+                topk_scores = sorted_scores[:K]
+
+                all_proposals.append(topk_proposals)
+                all_scores.append(topk_scores)
+
+            all_proposals = torch.cat(all_proposals, dim=0).detach()
+            all_scores = torch.cat(all_scores, dim=0).detach()
+
+            # Matching and sampling for the detection head.
+            (sampled_proposals, sampled_scores, sampled_labels,
+             sampled_bbox_targets, _) = matching_and_sampling(
+                 all_proposals, all_scores, gt, 128
+             )
+
+            # ROI Align: pool features corresponding to the proposals.
+            levels = sorted([int(x[-1]) for x in rpn_out.keys()])
+            aligned_proposals = perform_roi_align(
+                levels, sampled_proposals, fpn_features,
+                pooled_height, pooled_width, img_shape
+            )
+
+            # Forward pass through the detection head.
+            cls_scores, bbox_deltas = head(aligned_proposals)
+
+            # Compute losses.
+            rpn_cls_loss, rpn_bbox_loss = rpn_loss_fn(
+                rpn_sampled_deltas, rpn_sampled_scores,
+                rpn_sampled_labels, rpn_sampled_bbox_targets
+            )
+            det_cls_loss, det_bbox_loss = det_loss_fn(
+                bbox_deltas, cls_scores,
+                sampled_labels, sampled_bbox_targets, num_classes
+            )
+            batch_loss = rpn_cls_loss + rpn_bbox_loss + det_cls_loss + det_bbox_loss
+            total_loss += batch_loss.item()
+            total_batches += 1
+
+            # Build log message for this iteration.
+            log_message = (
+                f"Validation - Iteration: {i+1}, Batch Loss: {batch_loss.item():.4f}, "
+                f"RPN_cls: {rpn_cls_loss.item():.4f}, RPN_bbox: {rpn_bbox_loss.item():.4f}, "
+                f"DET_cls: {det_cls_loss.item():.4f}, DET_bbox: {det_bbox_loss.item():.4f}"
+            )
+            val_logger.info(log_message)
+
+    # Compute and log average validation loss.
+    avg_loss = total_loss / total_batches if total_batches > 0 else 0.0
+    avg_log_message = f"Validation - Average Loss: {avg_loss:.4f}"
+    val_logger.info(avg_log_message)
