@@ -151,16 +151,16 @@ def decode_boxes(anchors, deltas, im_shape):
     pred_h = torch.exp(dh) * heights    # New height
     
     # Convert center/size back to corner coordinates.
-    pred_boxes = torch.zeros_like(anchors)
-    pred_boxes[:, 0] = pred_ctr_x - 0.5 * (pred_w - 1.0)  # x1
-    pred_boxes[:, 1] = pred_ctr_y - 0.5 * (pred_h - 1.0)  # y1
-    pred_boxes[:, 2] = pred_ctr_x + 0.5 * (pred_w - 1.0)  # x2
-    pred_boxes[:, 3] = pred_ctr_y + 0.5 * (pred_h - 1.0)  # y2
+    x1 = torch.clamp(pred_ctr_x - 0.5 * (pred_w - 1.0), 0, im_shape[1] - 1)
+    y1 = torch.clamp(pred_ctr_y - 0.5 * (pred_h - 1.0), 0, im_shape[0] - 1)
+    x2 = torch.clamp(pred_ctr_x + 0.5 * (pred_w - 1.0), 0, im_shape[1] - 1)
+    y2 = torch.clamp(pred_ctr_y + 0.5 * (pred_h - 1.0), 0, im_shape[0] - 1)
+    pred_boxes = torch.stack([x1, y1, x2, y2], dim=1)
 
-    pred_boxes[:, 0] = pred_boxes[:, 0].clamp(0, im_shape[1] - 1)  # x1
-    pred_boxes[:, 1] = pred_boxes[:, 1].clamp(0, im_shape[0] - 1)  # y1
-    pred_boxes[:, 2] = pred_boxes[:, 2].clamp(0, im_shape[1] - 1)  # x2
-    pred_boxes[:, 3] = pred_boxes[:, 3].clamp(0, im_shape[0] - 1)  # y2
+    # pred_boxes[:, 0] = pred_boxes[:, 0].clamp(0, im_shape[1] - 1)  # x1
+    # pred_boxes[:, 1] = pred_boxes[:, 1].clamp(0, im_shape[0] - 1)  # y1
+    # pred_boxes[:, 2] = pred_boxes[:, 2].clamp(0, im_shape[1] - 1)  # x2
+    # pred_boxes[:, 3] = pred_boxes[:, 3].clamp(0, im_shape[0] - 1)  # y2
     
     return pred_boxes
 
