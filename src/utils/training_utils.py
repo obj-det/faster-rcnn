@@ -163,6 +163,9 @@ def matching_and_sampling(all_proposals, all_scores, gt, num_samples):
 
         num_pos_sample = min(num_pos, pos_idx.numel())
         num_neg_sample = num_samples - num_pos_sample
+        print('==========', flush=True)
+        print(batch_proposals.size(), pos_idx.size(), num_pos_sample, num_neg_sample, neg_idx.size(), gt_b.size(), flush=True)
+        print('==========', flush=True)
 
         if pos_idx.numel() > 0:
             perm_pos = pos_idx[torch.randperm(pos_idx.numel())][:num_pos_sample]
@@ -293,7 +296,7 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
             gt = torch.cat([t['boxes_with_label'] for t in targets], dim=0).to(device)
             rpn_gt = gt.clone()
             # Convert labels to binary for the RPN (foreground vs background)
-            rpn_gt[:, 5] = (rpn_gt[:, 5] > 0).long()
+            rpn_gt[:, 5] = 1
 
             # Forward pass: Backbone -> FPN.
             features = backbone(images)
@@ -317,6 +320,7 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
                 [get_scores(rpn_out[k][0]) for k in sorted_rpn_keys], dim=0
             )
 
+            print('Matching and Sampling for RPN...')
             # Matching and sampling for RPN training.
             (rpn_sampled_proposals, rpn_sampled_scores, rpn_sampled_labels,
              rpn_sampled_bbox_targets, rpn_sampled_indices) = matching_and_sampling(
@@ -353,6 +357,7 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
             all_proposals = torch.cat(all_proposals, dim=0).detach()
             all_scores = torch.cat(all_scores, dim=0).detach()
 
+            print('Matching and Sampling for Detection...')
             # Matching and sampling for the detection head.
             (sampled_proposals, sampled_scores, sampled_labels,
              sampled_bbox_targets, _) = matching_and_sampling(
@@ -393,6 +398,16 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
             )
             # Log to file
             train_logger.info(log_message)
+
+            if i % 25 == 0:
+                torch.save({
+                    'epoch': epoch + 1,
+                    'backbone_state_dict': backbone.state_dict(),
+                    'fpn_state_dict': fpn.state_dict(),
+                    'rpn_state_dict': rpn.state_dict(),
+                    'head_state_dict': head.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                }, f"checkpoints/model_epoch_{epoch+1}_iter_{i+1}.pth")
 
 def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                     layer_to_shifted_anchors, img_shape, num_classes,
