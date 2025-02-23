@@ -79,13 +79,22 @@ def collate_fn(batch):
     return images, targets
 
 def filter_bboxes_in_sample(sample):
-    img_width, img_height = sample["image"].size
-    
     valid_bboxes = []
     valid_categories = []
     valid_ids = [] if "id" in sample["objects"] else None
     valid_areas = [] if "area" in sample["objects"] else None
-    
+
+    if sample['width'] >= 4000 or sample['height'] >= 4000:
+        sample["objects"]["bbox"] = valid_bboxes
+        sample["objects"]["category"] = valid_categories
+        if valid_ids is not None:
+            sample["objects"]["id"] = valid_ids
+        if valid_areas is not None:
+            sample["objects"]["area"] = valid_areas
+        
+        return sample
+
+    img_width, img_height = sample["image"].size
     for i, bbox in enumerate(sample["objects"]["bbox"]):
         x, y, w, h = bbox
         if all([el >= 0 and el <= img_width for el in [x, x+w]]) and all([el >= 0 and el <= img_height for el in [y, y+h]]):
