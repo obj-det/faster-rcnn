@@ -33,14 +33,26 @@ layer_size_map = {
     'conv5': (18, 18)
 }
 
+layer_depth_map = {
+    'conv3': 256,
+    'conv4': 512,
+    'conv5': 512
+}
+
 C = 256
 pooled_height, pooled_width = 7, 7
+anchor_box_ratios=[0.25, 0.5, 1, 2, 4]
+anchor_box_scales=[4, 8, 16, 32]
+num_anchors = len(anchor_box_ratios) * len(anchor_box_scales)
 num_classes = len(ds['train'].features['objects'].feature['category'].names)
+
+fpn_in_channels = [layer_depth_map[k] for k in sorted(output_layer_map.keys(), key=lambda x: int(x[-1]))]
+fpn_out_channels = 256
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 backbone = Backbone(output_layer_map).to(device)
-fpn = FPN().to(device)
-rpn = RPN().to(device)
+fpn = FPN(in_channels=fpn_in_channels, out_channels=fpn_out_channels).to(device)
+rpn = RPN(in_channels=fpn_out_channels, num_anchors=len(anchor_box_ratios) * len(anchor_box_scales)).to(device)
 head = DetectionHead(in_channels=C, pooled_height=pooled_height, pooled_width=pooled_width, num_classes=num_classes).to(device)
 
 optimizer = optim.Adam(
@@ -98,7 +110,7 @@ val_dataset = DetectionDataset(filtered_val_ds, transform_pipeline, preprocess)
 val_dataloader = DataLoader(val_dataset, collate_fn=collate_fn, batch_size=4, shuffle=False)
 
 img_shape = (600, 600)
-anchors = generate_anchors()
+anchors = generate_anchors(ratios=anchor_box_ratios, scales=anchor_box_scales)
 
 layer_to_shifted_anchors = dict()
 for k in layer_size_map.keys():
