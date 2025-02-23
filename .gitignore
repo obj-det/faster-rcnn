@@ -4,3 +4,4 @@ PKG-INFO
 *.png
 *.txt
 *.log
+*.pth
