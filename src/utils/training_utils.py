@@ -244,13 +244,11 @@ def rpn_loss_fn(sampled_deltas, sampled_scores, sampled_labels, sampled_bbox_tar
 
 def det_loss_fn(sampled_bbox_preds, sampled_scores, sampled_labels, sampled_bbox_targets, num_classes):
     cls_loss = F.cross_entropy(sampled_scores, sampled_labels)
-    pos_inds = (sampled_labels == 1).nonzero(as_tuple=True)[0]
-
     pos_inds = torch.nonzero(sampled_labels > 0).squeeze(1)
 
     if pos_inds.numel() > 0:
         sampled_bbox_preds = sampled_bbox_preds.view(sampled_bbox_preds.size(0), num_classes, 4)
-        pos_labels = sampled_labels[pos_inds].view(-1, 1, 1).expand(-1, 1, 4)
+        pos_labels = (sampled_labels[pos_inds] - 1).view(-1, 1, 1).expand(-1, 1, 4)
         sampled_bbox_pred_pos = sampled_bbox_preds[pos_inds].gather(1, pos_labels).squeeze(1)
 
         # Use Smooth L1 loss on positive anchors.
