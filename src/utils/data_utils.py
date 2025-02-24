@@ -95,11 +95,13 @@ def filter_bboxes_in_sample(sample):
         return sample
 
     img_width, img_height = sample["image"].size
+    tgt_categories = [4]
+    category_mappings = {c: i+1 for i, c in enumerate(sorted(tgt_categories))}
     for i, bbox in enumerate(sample["objects"]["bbox"]):
         x, y, w, h = bbox
-        if all([el >= 0 and el <= img_width for el in [x, x+w]]) and all([el >= 0 and el <= img_height for el in [y, y+h]]):
+        if all([el >= 0 and el <= img_width for el in [x, x+w]]) and all([el >= 0 and el <= img_height for el in [y, y+h]]) and sample["objects"]["category"][i] in category_mappings:
             valid_bboxes.append([x, y, x+w-1, y+h-1])
-            valid_categories.append(sample["objects"]["category"][i])
+            valid_categories.append(category_mappings[sample["objects"]["category"][i]])
             if valid_ids is not None:
                 valid_ids.append(sample["objects"]["id"][i])
             if valid_areas is not None:
