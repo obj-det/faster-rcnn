@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from PIL import Image
 from torchvision import transforms
 from src.backbone import Backbone
@@ -18,6 +20,14 @@ filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"][
 
 mapped_val_ds = val_ds.map(filter_bboxes_in_sample, load_from_cache_file=False)
 filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
+
+category_to_count = defaultdict(int)
+
+for sample in filtered_train_ds:
+    for obj in sample["objects"]["category"]:
+        category_to_count[obj] += 1
+
+print(category_to_count)
 
 import torch.optim as optim
 
@@ -44,7 +54,9 @@ pooled_height, pooled_width = 7, 7
 anchor_box_ratios=[0.25, 0.5, 1, 2, 4]
 anchor_box_scales=[4, 8, 16, 32]
 num_anchors = len(anchor_box_ratios) * len(anchor_box_scales)
-num_classes = len(ds['train'].features['objects'].feature['category'].names)
+num_classes = len(category_to_count)
+
+print(f'Number of classes: {num_classes}')
 
 fpn_in_channels = [layer_depth_map[k] for k in sorted(output_layer_map.keys(), key=lambda x: int(x[-1]))]
 fpn_out_channels = 256
@@ -105,9 +117,9 @@ if not os.path.exists(checkpoint_dir):
     os.makedirs(checkpoint_dir)
 
 train_dataset = DetectionDataset(filtered_train_ds, transform_pipeline, preprocess)
-train_dataloader = DataLoader(train_dataset, collate_fn=collate_fn, batch_size=4, shuffle=True)
+train_dataloader = DataLoader(train_dataset, collate_fn=collate_fn, batch_size=8, shuffle=True)
 val_dataset = DetectionDataset(filtered_val_ds, transform_pipeline, preprocess)
-val_dataloader = DataLoader(val_dataset, collate_fn=collate_fn, batch_size=4, shuffle=False)
+val_dataloader = DataLoader(val_dataset, collate_fn=collate_fn, batch_size=8, shuffle=False)
 
 img_shape = (600, 600)
 anchors = generate_anchors(ratios=anchor_box_ratios, scales=anchor_box_scales)
