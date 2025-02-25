@@ -16,6 +16,7 @@ class FPN(nn.Module):
         output[keys[-1]] = aligned_features[-1]
         for i in range(len(aligned_features)-2, -1, -1):
             aligned_features[i] = F.interpolate(aligned_features[i+1], size=aligned_features[i].shape[-2:], mode='nearest') + aligned_features[i]
+            aligned_features[i] = self.smooth_convs[i](aligned_features[i])
             output[keys[i]] = aligned_features[i]
         return output
 
