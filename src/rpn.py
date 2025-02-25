@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class RPN(nn.Module):
@@ -11,7 +12,7 @@ class RPN(nn.Module):
 
     
     def forward(self, x):
-        x = self.initial_conv(x)
+        x = F.relu(self.initial_conv(x))
         cls = self.conv_cls(x)
         reg = self.conv_reg(x)
         return cls, reg
