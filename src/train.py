@@ -11,15 +11,15 @@ import datasets
 
 from src.utils import *
 
-ds = datasets.load_dataset("rishitdagli/cppe-5")
+ds = datasets.load_dataset("detection-datasets/coco")
 train_ds = ds['train']
-val_ds = ds['test']
+val_ds = ds['val']
 
-mapped_train_ds = train_ds.map(filter_bboxes_in_sample, load_from_cache_file=False)
-filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
+mapped_train_ds = train_ds.map(filter_bboxes_in_sample)
+filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0)
 
-mapped_val_ds = val_ds.map(filter_bboxes_in_sample, load_from_cache_file=False)
-filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
+mapped_val_ds = val_ds.map(filter_bboxes_in_sample)
+filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0)
 
 category_to_count = defaultdict(int)
 
@@ -51,8 +51,8 @@ layer_depth_map = {
 
 C = 256
 pooled_height, pooled_width = 7, 7
-anchor_box_ratios=[0.25, 0.5, 1, 2, 4]
-anchor_box_scales=[4, 8, 16, 32]
+anchor_box_ratios=[0.25, 0.5, 1, 2]
+anchor_box_scales=[8, 16, 32]
 num_anchors = len(anchor_box_ratios) * len(anchor_box_scales)
 num_classes = len(category_to_count)
 
