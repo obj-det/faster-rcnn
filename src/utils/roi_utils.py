@@ -57,7 +57,7 @@ def nms(rois, scores, iou_threshold=0.7, score_threshold=0.0):
         # order[0] was the current box, so we only update the remaining ones:
         order = order[inds + 1]
 
-    keep = torch.tensor(keep, device=rois.device)
+    keep = torch.tensor(keep, dtype=torch.long, device=rois.device)
     return keep
 
 def map_rois_to_fpn_levels(rois, k0=4, canonical_scale=224, min_level=3, max_level=5):
