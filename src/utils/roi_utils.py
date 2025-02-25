@@ -18,10 +18,10 @@ def nms_old(rois, scores, iou_threshold=0.7, score_threshold=0.05):
     if rois.numel() == 0:
         keep = torch.empty((0,), dtype=torch.int64, device=rois.device)
 
-    x1 = rois[:, 0]
-    y1 = rois[:, 1]
-    x2 = rois[:, 2]
-    y2 = rois[:, 3]
+    x1 = rois[:, 1]
+    y1 = rois[:, 2]
+    x2 = rois[:, 3]
+    y2 = rois[:, 4]
 
     areas = (x2 - x1 + 1) * (y2 - y1 + 1)
 
