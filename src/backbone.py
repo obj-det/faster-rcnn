@@ -21,6 +21,6 @@ class Backbone(nn.Module):
             self.vgg16[layer_idx].register_forward_hook(lambda _module, _inputs, outputs, name=layer_name: self.hook_fn(outputs, name))
 
     def forward(self, x):
-        # with torch.no_grad():
+        self.features = dict()
         self.vgg16(x)
         return self.features
