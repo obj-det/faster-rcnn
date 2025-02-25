@@ -17,18 +17,11 @@ preprocess = transforms.Compose([
 
 transform_pipeline = A.Compose(
     [
-        A.Resize(600, 600),  # Resize image and bounding boxes to 600x600.
+        A.Resize(600, 600),
         A.HorizontalFlip(p=0.5),
-        A.RandomBrightnessContrast(p=0.2),
-        A.ShiftScaleRotate(
-            scale_limit=0.1, 
-            rotate_limit=15, 
-            shift_limit=0.1, 
-            p=0.5, 
-            border_mode=cv2.BORDER_CONSTANT
-        )
+        A.RandomBrightnessContrast(p=0.5)
     ],
-    bbox_params=A.BboxParams(format="coco", label_fields=["category"])
+    bbox_params=A.BboxParams(format="pascal_voc", label_fields=["category"])
 )
 
 class DetectionDataset(Dataset):
@@ -86,19 +79,32 @@ def collate_fn(batch):
     return images, targets
 
 def filter_bboxes_in_sample(sample):
-    img_width = sample["width"]
-    img_height = sample["height"]
-    
     valid_bboxes = []
     valid_categories = []
     valid_ids = [] if "id" in sample["objects"] else None
     valid_areas = [] if "area" in sample["objects"] else None
-    
+
+    if sample['width'] >= 4000 or sample['height'] >= 4000:
+        sample["objects"]["bbox"] = valid_bboxes
+        sample["objects"]["category"] = valid_categories
+        if valid_ids is not None:
+            sample["objects"]["id"] = valid_ids
+        if valid_areas is not None:
+            sample["objects"]["area"] = valid_areas
+        
+        return sample
+
+    img_width, img_height = sample["image"].size
+    tgt_categories = [6]
+    category_mappings = {c: i+1 for i, c in enumerate(sorted(tgt_categories))}
     for i, bbox in enumerate(sample["objects"]["bbox"]):
-        x, y, w, h = bbox
-        if all([el >= 0 and el <= img_width for el in [x, x+w]]) and all([el >= 0 and el <= img_height for el in [y, y+h]]):
-            valid_bboxes.append(bbox)
-            valid_categories.append(sample["objects"]["category"][i])
+        # x, y, w, h = bbox
+        x, y, x2, y2 = bbox
+        w = x2 - x + 1
+        h = y2 - y + 1
+        if all([el >= 0 and el <= img_width for el in [x, x+w]]) and all([el >= 0 and el <= img_height for el in [y, y+h]]) and sample["objects"]["category"][i] in category_mappings:
+            valid_bboxes.append([x, y, x+w-1, y+h-1])
+            valid_categories.append(category_mappings[sample["objects"]["category"][i]])
             if valid_ids is not None:
                 valid_ids.append(sample["objects"]["id"][i])
             if valid_areas is not None:

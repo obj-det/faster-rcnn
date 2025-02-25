@@ -163,6 +163,9 @@ def matching_and_sampling(all_proposals, all_scores, gt, num_samples):
 
         num_pos_sample = min(num_pos, pos_idx.numel())
         num_neg_sample = num_samples - num_pos_sample
+        print('==========', flush=True)
+        print(batch_proposals.size(), pos_idx.size(), num_pos_sample, num_neg_sample, neg_idx.size(), gt_b.size(), flush=True)
+        print('==========', flush=True)
 
         if pos_idx.numel() > 0:
             perm_pos = pos_idx[torch.randperm(pos_idx.numel())][:num_pos_sample]
@@ -192,11 +195,11 @@ def matching_and_sampling(all_proposals, all_scores, gt, num_samples):
         sampled_bbox_targets_list.append(bbox_targets_keep)
 
     # Concatenate results from all batches.
-    sampled_proposals = torch.cat(sampled_proposals_list, dim=0)
-    sampled_scores = torch.cat(batch_scores_list, dim=0)
-    sampled_labels = torch.cat(sampled_labels_list, dim=0)
-    sampled_bbox_targets = torch.cat(sampled_bbox_targets_list, dim=0)
-    sampled_indices = torch.cat(sampled_indices_list, dim=0)
+    sampled_proposals = torch.cat(sampled_proposals_list, dim=0) if sampled_proposals_list else torch.empty(0, 5, dtype=torch.float32, device=all_proposals.device)
+    sampled_scores = torch.cat(batch_scores_list, dim=0) if batch_scores_list else torch.empty(0, dtype=torch.float32, device=all_proposals.device)
+    sampled_labels = torch.cat(sampled_labels_list, dim=0) if sampled_labels_list else torch.empty(0, dtype=torch.int64, device=all_proposals.device)
+    sampled_bbox_targets = torch.cat(sampled_bbox_targets_list, dim=0) if sampled_bbox_targets_list else torch.empty(0, 4, dtype=torch.float32, device=all_proposals.device)
+    sampled_indices = torch.cat(sampled_indices_list, dim=0) if sampled_indices_list else torch.empty(0, dtype=torch.int64, device=all_proposals.device)
 
     return sampled_proposals, sampled_scores, sampled_labels, sampled_bbox_targets, sampled_indices
 
@@ -240,14 +243,16 @@ def rpn_loss_fn(sampled_deltas, sampled_scores, sampled_labels, sampled_bbox_tar
     return cls_loss, loss_reg
 
 def det_loss_fn(sampled_bbox_preds, sampled_scores, sampled_labels, sampled_bbox_targets, num_classes):
-    cls_loss = F.cross_entropy(sampled_scores, sampled_labels)
-    pos_inds = (sampled_labels == 1).nonzero(as_tuple=True)[0]
-
+    if sampled_scores.size(0) == 0:
+        cls_loss = torch.tensor(0.0, device=sampled_scores.device)
+    else:
+        cls_loss = F.cross_entropy(sampled_scores, sampled_labels)
+    
     pos_inds = torch.nonzero(sampled_labels > 0).squeeze(1)
 
     if pos_inds.numel() > 0:
         sampled_bbox_preds = sampled_bbox_preds.view(sampled_bbox_preds.size(0), num_classes, 4)
-        pos_labels = sampled_labels[pos_inds].view(-1, 1, 1).expand(-1, 1, 4)
+        pos_labels = (sampled_labels[pos_inds] - 1).view(-1, 1, 1).expand(-1, 1, 4)
         sampled_bbox_pred_pos = sampled_bbox_preds[pos_inds].gather(1, pos_labels).squeeze(1)
 
         # Use Smooth L1 loss on positive anchors.
@@ -293,7 +298,7 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
             gt = torch.cat([t['boxes_with_label'] for t in targets], dim=0).to(device)
             rpn_gt = gt.clone()
             # Convert labels to binary for the RPN (foreground vs background)
-            rpn_gt[:, 5] = (rpn_gt[:, 5] > 0).long()
+            rpn_gt[:, 5] = 1
 
             # Forward pass: Backbone -> FPN.
             features = backbone(images)
@@ -317,6 +322,7 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
                 [get_scores(rpn_out[k][0]) for k in sorted_rpn_keys], dim=0
             )
 
+            print('Matching and Sampling for RPN...')
             # Matching and sampling for RPN training.
             (rpn_sampled_proposals, rpn_sampled_scores, rpn_sampled_labels,
              rpn_sampled_bbox_targets, rpn_sampled_indices) = matching_and_sampling(
@@ -335,6 +341,9 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
 
                 # Apply Non-Maximum Suppression (NMS) per batch.
                 keep = nms(batch_rois, batch_scores[:, 1])
+                print('='*10, flush=True)
+                print('NMS:', keep.size(), flush=True)
+                print('='*10, flush=True)
                 batch_rois = batch_rois[keep]
                 batch_scores = batch_scores[keep]
 
@@ -343,7 +352,7 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
                 sorted_proposals = batch_rois[sorted_indices]
                 sorted_scores = batch_scores[sorted_indices]
 
-                K = 2000  # Adjust K based on your requirements.
+                K = 300  # Adjust K based on your requirements.
                 topk_proposals = sorted_proposals[:K]
                 topk_scores = sorted_scores[:K]
 
@@ -353,6 +362,7 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
             all_proposals = torch.cat(all_proposals, dim=0).detach()
             all_scores = torch.cat(all_scores, dim=0).detach()
 
+            print('Matching and Sampling for Detection...')
             # Matching and sampling for the detection head.
             (sampled_proposals, sampled_scores, sampled_labels,
              sampled_bbox_targets, _) = matching_and_sampling(
@@ -393,6 +403,16 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
             )
             # Log to file
             train_logger.info(log_message)
+
+            if i % 25 == 0:
+                torch.save({
+                    'epoch': epoch + 1,
+                    'backbone_state_dict': backbone.state_dict(),
+                    'fpn_state_dict': fpn.state_dict(),
+                    'rpn_state_dict': rpn.state_dict(),
+                    'head_state_dict': head.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                }, f"checkpoints/model_epoch_{epoch+1}_iter_{i+1}.pth")
 
 def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                     layer_to_shifted_anchors, img_shape, num_classes,
@@ -481,7 +501,7 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                 sorted_proposals = batch_rois[sorted_indices]
                 sorted_scores = batch_scores[sorted_indices]
 
-                K = 2000  # Adjust K based on your requirements.
+                K = 1000  # Adjust K based on your requirements.
                 topk_proposals = sorted_proposals[:K]
                 topk_scores = sorted_scores[:K]
 
