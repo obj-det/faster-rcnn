@@ -1,14 +1,16 @@
 import torch
 import math
 
+import torchvision.ops as ops
+
 def get_scores(rpn_output):
     B, S, H, W = rpn_output.size()
     scores = rpn_output.view(B, -1, 2, H, W)
     scores = scores.permute(0, 3, 4, 1, 2).contiguous().view(B, -1, 2)
     return scores.view(-1, 2)
 
-def nms(rois, scores, iou_threshold=0.7, score_threshold=0.0):
-    keep_initial = scores >= score_threshold
+def nms_old(rois, scores, iou_threshold=0.7, score_threshold=0.05):
+    keep_initial = torch.sigmoid(scores) > score_threshold
 
     rois = rois[keep_initial]
     scores = scores[keep_initial]
@@ -58,6 +60,23 @@ def nms(rois, scores, iou_threshold=0.7, score_threshold=0.0):
         order = order[inds + 1]
 
     keep = torch.tensor(keep, dtype=torch.long, device=rois.device)
+    return keep
+
+def nms(rois, scores, iou_threshold=0.7, score_threshold=0.05):
+    # Apply sigmoid to get probabilities and threshold them.
+    keep_initial = torch.sigmoid(scores) > score_threshold
+    rois = rois[keep_initial]
+    scores = scores[keep_initial]
+    
+    if rois.numel() == 0:
+        return torch.empty((0,), dtype=torch.int64, device=rois.device)
+    
+    # Use the built-in, optimized NMS.
+    print('='*10)
+    print('inside nms')
+    print(rois[:5, :])
+    print('='*10)
+    keep = ops.nms(rois[:, 1:], scores, iou_threshold)
     return keep
 
 def map_rois_to_fpn_levels(rois, k0=4, canonical_scale=224, min_level=3, max_level=5):
