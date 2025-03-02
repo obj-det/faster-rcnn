@@ -72,10 +72,6 @@ def nms(rois, scores, iou_threshold=0.7, score_threshold=0.05):
         return torch.empty((0,), dtype=torch.int64, device=rois.device)
     
     # Use the built-in, optimized NMS.
-    print('='*10)
-    print('inside nms')
-    print(rois[:5, :], scores[:5])
-    print('='*10)
     keep = ops.nms(rois[:, 1:], scores, iou_threshold)
     return keep
 

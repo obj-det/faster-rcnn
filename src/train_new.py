@@ -75,18 +75,18 @@ def main():
         print(f"\nEpoch {epoch+1}/{num_epochs}")
         
         # Training
-        train_loop(
-            1, train_dataloader, backbone, fpn, rpn, head, optimizer, device,
-            layer_to_shifted_anchors, img_shape, num_classes, 
-            pooled_height, pooled_width, train_logger, config
-        )
+        # train_loop(
+        #     1, train_dataloader, backbone, fpn, rpn, head, optimizer, device,
+        #     layer_to_shifted_anchors, img_shape, num_classes, 
+        #     pooled_height, pooled_width, train_logger, config['model']
+        # )
         
         # Validation
         print(f'Starting Validation for epoch {epoch+1}')
         metrics = validation_loop(
             val_dataloader, backbone, fpn, rpn, head, device,
             layer_to_shifted_anchors, img_shape, num_classes, 
-            pooled_height, pooled_width, val_logger, config
+            pooled_height, pooled_width, val_logger, config['model'], config['evaluation']['ap_iou_thresholds']
         )
         
         # Get validation metrics

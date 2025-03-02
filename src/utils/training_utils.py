@@ -130,17 +130,7 @@ def matching_and_sampling(all_proposals, all_scores, gt, num_samples, pos_iou_th
         N_b = batch_proposals.shape[0]
         M_b = gt_b.shape[0]
 
-        # print(batch_proposals.size(), gt_b.size())
-        
-        # max_ious = torch.zeros(N_b, device=all_proposals.device)
-        # gt_assignment = torch.full((N_b,), -1, dtype=torch.long, device=all_proposals.device)
-        # for i in range(N_b):
-        #     ious = compute_iou(batch_proposals[i], gt_b)  # shape [M_b]
-        #     max_iou, idx = ious.max(0)
-        #     max_ious[i] = max_iou
-        #     gt_assignment[i] = idx
         ious = compute_iou_vectorized(batch_proposals, gt_b)  # [N_b, M_b]
-        # print(ious.size())
         max_ious, gt_assignment = ious.max(dim=1)  # max_ious: [N_b], gt_assignment: [N_b]
 
         # Initialize labels for proposals (default background: label 0).
@@ -155,7 +145,6 @@ def matching_and_sampling(all_proposals, all_scores, gt, num_samples, pos_iou_th
             matched_gt = gt_b[gt_assignment[pos_inds]]
             bbox_targets_b[pos_inds] = bbox_transform(pos_proposals, matched_gt)
         
-        # print(bbox_targets_b.size(), labels_b.size())
         valid_inds = (max_ious >= pos_iou_thresh) | (max_ious < neg_iou_thresh)
 
         num_pos = int(pos_fraction * num_samples)
@@ -164,9 +153,6 @@ def matching_and_sampling(all_proposals, all_scores, gt, num_samples, pos_iou_th
 
         num_pos_sample = min(num_pos, pos_idx.numel())
         num_neg_sample = num_samples - num_pos_sample
-        print('==========', flush=True)
-        print(batch_proposals.size(), pos_idx.size(), num_pos_sample, num_neg_sample, neg_idx.size(), gt_b.size(), flush=True)
-        print('==========', flush=True)
 
         if pos_idx.numel() > 0:
             perm_pos = pos_idx[torch.randperm(pos_idx.numel())][:num_pos_sample]
@@ -323,16 +309,12 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
                 [get_scores(rpn_out[k][0]) for k in sorted_rpn_keys], dim=0
             )
 
-            print('Matching and Sampling for RPN...', flush=True)
             # Matching and sampling for RPN training.
             (rpn_sampled_proposals, rpn_sampled_scores, rpn_sampled_labels,
              rpn_sampled_bbox_targets, rpn_sampled_indices) = matching_and_sampling(
                  rois, scores, rpn_gt, config['rpn']['rpn_train_batch_size'], pos_iou_thresh=config['rpn']['rpn_pos_iou_thresh'], neg_iou_thresh=config['rpn']['rpn_neg_iou_thresh'], pos_fraction=config['rpn']['rpn_pos_ratio']
              )
             rpn_sampled_deltas = all_rpn_deltas[rpn_sampled_indices]
-            print('Matching and sampling output' + ('='*10), flush=True)
-            print(rpn_sampled_proposals.size(), rpn_sampled_scores.size(), rpn_sampled_labels.size(), rpn_sampled_bbox_targets.size(), rpn_sampled_indices.size(), rpn_sampled_deltas.size(), flush=True)
-            print('Matching and sampling output' + ('='*10), flush=True)
 
             # Process proposals for the detection head.
             unique_batches = rois[:, 0].unique()
@@ -346,9 +328,6 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
 
                 # Apply Non-Maximum Suppression (NMS) per batch.
                 keep = nms(batch_rois, batch_scores[:, 1], iou_threshold=config['rpn']['nms_iou_thresh'], score_threshold=config['rpn']['nms_score_thresh'])
-                print('='*10, flush=True)
-                print('NMS:', keep.size(), flush=True)
-                print('='*10, flush=True)
                 batch_rois = batch_rois[keep]
                 batch_scores = batch_scores[keep]
 
@@ -367,22 +346,17 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
             all_proposals = torch.cat(all_proposals, dim=0).detach()
             all_scores = torch.cat(all_scores, dim=0).detach()
 
-            print('Matching and Sampling for Detection...', flush=True)
             # Matching and sampling for the detection head.
             (sampled_proposals, sampled_scores, sampled_labels,
              sampled_bbox_targets, _) = matching_and_sampling(
                  all_proposals, all_scores, gt, config['head']['detection_train_batch_size'], pos_iou_thresh=config['head']['detection_pos_iou_thresh'], neg_iou_thresh=config['head']['detection_neg_iou_thresh'], pos_fraction=config['head']['detection_pos_ratio']
              )
-            print('Matching and sampling output' + ('='*10), flush=True)
-            print(sampled_proposals.size(), sampled_scores.size(), sampled_labels.size(), sampled_bbox_targets.size(), flush=True)
-            print('Matching and sampling output' + ('='*10), flush=True)
             # ROI Align: pool features corresponding to the proposals.
             levels = sorted([int(x[-1]) for x in rpn_out.keys()])
             aligned_proposals = perform_roi_align(
                 levels, sampled_proposals, fpn_features,
                 pooled_height, pooled_width, img_shape
             )
-            print('Finished roi align', flush=True)
 
             # Forward pass through the detection head.
             cls_scores, bbox_deltas = head(aligned_proposals)
@@ -424,7 +398,7 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
 
 def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                     layer_to_shifted_anchors, img_shape, num_classes,
-                    pooled_height, pooled_width, val_logger, config):
+                    pooled_height, pooled_width, val_logger, config, ap_iou_thresholds):
     """
     Validation loop for the detection network. Computes the losses on the validation set,
     logs metrics for each iteration, and evaluates detection performance using COCO metrics.
@@ -533,7 +507,7 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
             # Matching and sampling for RPN training.
             (rpn_sampled_proposals, rpn_sampled_scores, rpn_sampled_labels,
              rpn_sampled_bbox_targets, rpn_sampled_indices) = matching_and_sampling(
-                 rois, scores, rpn_gt, config['rpn']['rpn_val_batch_size'], pos_iou_thresh=config['rpn']['rpn_pos_iou_thresh'], neg_iou_thresh=config['rpn']['rpn_neg_iou_thresh'], pos_fraction=config['rpn']['rpn_pos_ratio']
+                 rois, scores, rpn_gt, config['rpn']['rpn_test_batch_size'], pos_iou_thresh=config['rpn']['rpn_pos_iou_thresh'], neg_iou_thresh=config['rpn']['rpn_neg_iou_thresh'], pos_fraction=config['rpn']['rpn_pos_ratio']
              )
             rpn_sampled_deltas = all_rpn_deltas[rpn_sampled_indices]
 
@@ -569,7 +543,7 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
             # Matching and sampling for the detection head.
             (sampled_proposals, sampled_scores, sampled_labels,
              sampled_bbox_targets, _) = matching_and_sampling(
-                 all_proposals, all_scores, gt, config['head']['detection_val_batch_size'], pos_iou_thresh=config['head']['detection_pos_iou_thresh'], neg_iou_thresh=config['head']['detection_neg_iou_thresh'], pos_fraction=config['head']['detection_pos_ratio']
+                 all_proposals, all_scores, gt, config['head']['detection_test_batch_size'], pos_iou_thresh=config['head']['detection_pos_iou_thresh'], neg_iou_thresh=config['head']['detection_neg_iou_thresh'], pos_fraction=config['head']['detection_pos_ratio']
              )
 
             # ROI Align: pool features corresponding to the proposals.
@@ -667,11 +641,12 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
     coco_evaluator.coco_gt = coco_gt
     
     # Compute AP metrics for each IoU threshold specified in config.
-    ap_metrics = coco_evaluator.compute_AP_for_thresholds(config['evaluation']['ap_iou_thresholds'])
+    ap_metrics = coco_evaluator.compute_AP_for_thresholds(ap_iou_thresholds)
     
-    # Log the AP metrics.
-    for key, value in ap_metrics.items():
-        val_logger.info(f"COCO Evaluation - {key}: {value:.4f}")
+    ap_metrics_str = "\n".join(
+        [f"{key:<20}: {value:.4f}" for key, value in sorted(ap_metrics.items())]
+    )
+    val_logger.info("COCO Evaluation AP Metrics:\n" + ap_metrics_str)
     
     metrics = {"avg_loss": avg_loss}
     metrics.update(ap_metrics)
