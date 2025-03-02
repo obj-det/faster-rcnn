@@ -1,10 +1,8 @@
 import torch
-import torch.nn.functional as F
-from tqdm import tqdm
-from pycocotools.cocoeval import COCOeval
-from pycocotools.coco import COCO
-
 from src.utils.anchor_utils import *
+
+import numpy as np
+from pycocotools.cocoeval import COCOeval
 
 class CocoEvaluator:
     def __init__(self, coco_gt):
@@ -50,20 +48,57 @@ class CocoEvaluator:
                 "score": float(score)
             })
 
-    def compute_AP(self):
-        """Compute COCO AP metrics and return AP for small, medium, and large objects."""
+    def compute_AP(self, iou_thresh=None):
+        """
+        Compute COCO AP metrics. If iou_thresh is provided, override the default IoU thresholds.
+
+        Returns:
+            dict: Dictionary containing AP metrics.
+                  If iou_thresh is None, returns metrics averaged over the default range.
+                  Otherwise returns metrics for that specific IoU threshold.
+        """
         coco_dt = self.coco_gt.loadRes(self.predictions)
         coco_eval = COCOeval(self.coco_gt, coco_dt, "bbox")
+        if iou_thresh is not None:
+            coco_eval.params.iouThrs = np.array([iou_thresh])
         coco_eval.evaluate()
         coco_eval.accumulate()
-        coco_eval.summarize()
+        # Optionally, you can call coco_eval.summarize() to print the summary.
 
-        # Indices: 3 for small, 4 for medium, 5 for large objects.
-        ap_small = coco_eval.stats[3]
-        ap_medium = coco_eval.stats[4]
-        ap_large = coco_eval.stats[5]
+        if iou_thresh is None:
+            # Use default summary indices (using average over multiple thresholds)
+            ap_small = coco_eval.stats[3]
+            ap_medium = coco_eval.stats[4]
+            ap_large = coco_eval.stats[5]
+            return {"AP_small": ap_small, "AP_medium": ap_medium, "AP_large": ap_large}
+        else:
+            # When using a single IoU threshold, stats[0] is the AP at that threshold.
+            # The indices for small, medium, large might still be in positions 3, 4, 5.
+            ap = coco_eval.stats[0]
+            ap_small = coco_eval.stats[3] if len(coco_eval.stats) > 3 else None
+            ap_medium = coco_eval.stats[4] if len(coco_eval.stats) > 4 else None
+            ap_large = coco_eval.stats[5] if len(coco_eval.stats) > 5 else None
+            return {"AP": ap, "AP_small": ap_small, "AP_medium": ap_medium, "AP_large": ap_large}
 
-        return {"AP_small": ap_small, "AP_medium": ap_medium, "AP_large": ap_large}
+    def compute_AP_for_thresholds(self, iou_thresholds):
+        """
+        Compute COCO AP metrics for each IoU threshold provided.
+
+        Args:
+            iou_thresholds (list): List of IoU thresholds.
+
+        Returns:
+            dict: A dictionary with keys for each IoU threshold containing AP metrics.
+                  For example: {"AP_0.50": 0.123, "AP_small_0.50": 0.045, ...}
+        """
+        results = {}
+        for thr in iou_thresholds:
+            metrics = self.compute_AP(iou_thresh=thr)
+            results[f"AP_{thr:.2f}"] = metrics["AP"]
+            results[f"AP_small_{thr:.2f}"] = metrics["AP_small"]
+            results[f"AP_medium_{thr:.2f}"] = metrics["AP_medium"]
+            results[f"AP_large_{thr:.2f}"] = metrics["AP_large"]
+        return results
 
     def reset(self):
         """Clear predictions."""

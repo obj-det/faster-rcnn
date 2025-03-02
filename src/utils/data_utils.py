@@ -7,21 +7,21 @@ from torch.utils.data import Dataset, DataLoader
 import albumentations as A
 import cv2
 
-preprocess = transforms.Compose([   
-    transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],     # ImageNet mean
-        std=[0.229, 0.224, 0.225]       # ImageNet std
-    )
-])
+# preprocess = transforms.Compose([   
+#     transforms.ToTensor(),
+#     transforms.Normalize(
+#         mean=[0.485, 0.456, 0.406],     # ImageNet mean
+#         std=[0.229, 0.224, 0.225]       # ImageNet std
+#     )
+# ])
 
-transform_pipeline = A.Compose(
-    [
-        A.Resize(600, 600),
-        A.HorizontalFlip(p=0.5)
-    ],
-    bbox_params=A.BboxParams(format="pascal_voc", label_fields=["category"])
-)
+# transform_pipeline = A.Compose(
+#     [
+#         A.Resize(600, 600),
+#         A.HorizontalFlip(p=0.5)
+#     ],
+#     bbox_params=A.BboxParams(format="pascal_voc", label_fields=["category"])
+# )
 
 class DetectionDataset(Dataset):
     def __init__(self, hf_dataset, albumentations_transform, preprocess_transform):
@@ -77,7 +77,7 @@ def collate_fn(batch):
     images = torch.stack(images, dim=0)
     return images, targets
 
-def filter_bboxes_in_sample(sample):
+def filter_bboxes_in_sample(sample, tgt_categories):
     valid_bboxes = []
     valid_categories = []
     valid_ids = [] if "id" in sample["objects"] else None
@@ -94,14 +94,13 @@ def filter_bboxes_in_sample(sample):
         return sample
 
     img_width, img_height = sample["image"].size
-    tgt_categories = [16]
     category_mappings = {c: i+1 for i, c in enumerate(sorted(tgt_categories))}
     for i, bbox in enumerate(sample["objects"]["bbox"]):
         # x, y, w, h = bbox
         x, y, x2, y2 = bbox
         w = x2 - x + 1
         h = y2 - y + 1
-        if all([el >= 0 and el <= img_width for el in [x, x+w]]) and all([el >= 0 and el <= img_height for el in [y, y+h]]) and sample["objects"]["category"][i] in category_mappings:
+        if all([el >= 0 and el <= img_width for el in [x, x+w]]) and all([el >= 0 and el <= img_height for el in [y, y+h]]) and (len(category_mappings) == 0 or sample["objects"]["category"][i] in category_mappings):
             valid_bboxes.append([x, y, x+w-1, y+h-1])
             valid_categories.append(category_mappings[sample["objects"]["category"][i]])
             if valid_ids is not None:
