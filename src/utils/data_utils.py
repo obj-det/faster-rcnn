@@ -18,8 +18,7 @@ preprocess = transforms.Compose([
 transform_pipeline = A.Compose(
     [
         A.Resize(600, 600),
-        A.HorizontalFlip(p=0.5),
-        A.RandomBrightnessContrast(p=0.5)
+        A.HorizontalFlip(p=0.5)
     ],
     bbox_params=A.BboxParams(format="pascal_voc", label_fields=["category"])
 )
@@ -95,7 +94,7 @@ def filter_bboxes_in_sample(sample):
         return sample
 
     img_width, img_height = sample["image"].size
-    tgt_categories = [6]
+    tgt_categories = [16]
     category_mappings = {c: i+1 for i, c in enumerate(sorted(tgt_categories))}
     for i, bbox in enumerate(sample["objects"]["bbox"]):
         # x, y, w, h = bbox
