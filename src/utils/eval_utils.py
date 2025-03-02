@@ -13,7 +13,7 @@ class CocoEvaluator:
         self.coco_gt = coco_gt
         self.predictions = []
 
-    def update(self, proposals, bbox_deltas, cls_scores, gt, im_shape):
+    def update(self, proposals, bbox_deltas, cls_scores, image_id, im_shape):
         """
         Store predictions for evaluation after decoding bbox deltas.
 
@@ -21,8 +21,7 @@ class CocoEvaluator:
             proposals (Tensor): [N, 5] tensor of proposals (batch_idx, x1, y1, x2, y2).
             bbox_deltas (Tensor): Predicted bbox deltas (shape: [N, 4]).
             cls_scores (Tensor): Predicted classification scores.
-            gt (Tensor): Ground truth boxes for the image.
-                       Assumes the first column contains the image_id.
+            image_id (int): The COCO image ID for this set of predictions.
             im_shape (tuple): (height, width) of the image.
         """
         # Decode final boxes using the proposals (excluding batch index) and bbox deltas.
@@ -33,8 +32,7 @@ class CocoEvaluator:
         scores = scores.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
 
-        # NOTE: This assumes a single image per batch.
-        image_id = int(gt[0, 0].item())
+        # Add predictions using the provided image_id
         for box, score, label in zip(boxes, scores, labels):
             self.predictions.append({
                 "image_id": image_id,
