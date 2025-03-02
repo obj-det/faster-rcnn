@@ -18,10 +18,10 @@ def nms_old(rois, scores, iou_threshold=0.7, score_threshold=0.05):
     if rois.numel() == 0:
         keep = torch.empty((0,), dtype=torch.int64, device=rois.device)
 
-    x1 = rois[:, 0]
-    y1 = rois[:, 1]
-    x2 = rois[:, 2]
-    y2 = rois[:, 3]
+    x1 = rois[:, 1]
+    y1 = rois[:, 2]
+    x2 = rois[:, 3]
+    y2 = rois[:, 4]
 
     areas = (x2 - x1 + 1) * (y2 - y1 + 1)
 
@@ -64,7 +64,7 @@ def nms_old(rois, scores, iou_threshold=0.7, score_threshold=0.05):
 
 def nms(rois, scores, iou_threshold=0.7, score_threshold=0.05):
     # Apply sigmoid to get probabilities and threshold them.
-    keep_initial = torch.sigmoid(scores) > score_threshold
+    keep_initial = scores > score_threshold
     rois = rois[keep_initial]
     scores = scores[keep_initial]
     
@@ -74,7 +74,7 @@ def nms(rois, scores, iou_threshold=0.7, score_threshold=0.05):
     # Use the built-in, optimized NMS.
     print('='*10)
     print('inside nms')
-    print(rois[:5, :])
+    print(rois[:5, :], scores[:5])
     print('='*10)
     keep = ops.nms(rois[:, 1:], scores, iou_threshold)
     return keep
@@ -183,8 +183,8 @@ def custom_roi_align(feature_map, rois, output_size, spatial_scale=1.0, sampling
         y2 = roi[4] * spatial_scale
 
         # Compute the ROI's width and height (ensure minimum size of 1).
-        roi_width = max(x2 - x1, 1.0)
-        roi_height = max(y2 - y1, 1.0)
+        roi_width = max(x2 - x1 + 1, 1.0)
+        roi_height = max(y2 - y1 + 1, 1.0)
 
         # Compute bin sizes
         bin_size_w = roi_width / pooled_width
@@ -243,14 +243,14 @@ def perform_roi_align(levels, all_proposals, fpn_features, pooled_height, pooled
         proposals_level = all_proposals[level_inds]
         feature_map = fpn_features['conv' + str(level)]
 
-        spatial_scale = img_shape[0] / feature_map.size(2)
+        spatial_scale = feature_map.size(2) / img_shape[0]
 
-        aligned_features = custom_roi_align(
+        aligned_features = ops.roi_align(
             feature_map, 
             proposals_level, 
             output_size=(pooled_height, pooled_width), 
-            spatial_scale=spatial_scale, 
-            sampling_ratio=2
+            spatial_scale=spatial_scale,
+            aligned=True              # Optional: set to True if you want aligned corners.
         )
 
         roi_aligned_features[level_inds] = aligned_features
