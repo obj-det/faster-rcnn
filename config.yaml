@@ -1,7 +1,7 @@
 # Dataset Configuration
 dataset:
   name: "detection-datasets/coco"
-  tgt_categories: [6]
+  tgt_categories: [16]
   filter_empty_boxes: true
 
 # Training Configuration
@@ -42,8 +42,8 @@ model:
   
   # RPN Configuration
   rpn:
-    anchor_box_ratios: [0.25, 0.5, 1, 2]
-    anchor_box_scales: [8, 16, 32]
+    anchor_box_ratios: [0.5, 1, 2]
+    anchor_box_scales: [4, 8, 16, 32]
     nms_iou_thresh: 0.7
     nms_score_thresh: 0.05
     nms_topk_train: 2000
@@ -72,12 +72,12 @@ image:
 # Augmentation Configuration
 augmentation:
   horizontal_flip_prob: 0.5
-  # vertical_flip_prob: 0.0
-  # random_crop_prob: 0.3
-  # brightness_range: [0.8, 1.2]
-  # contrast_range: [0.8, 1.2]
-  # saturation_range: [0.8, 1.2]
-  # hue_range: [-0.1, 0.1]
+  vertical_flip_prob: 0.0
+  random_crop_prob: 0.2
+  brightness_range: [0.8, 1.2]
+  contrast_range: [0.8, 1.2]
+  hue_range: [-0.1, 0.1]
+  saturation_range: [0.9, 1.1]
 
 # Logging and Checkpoints
 logging:

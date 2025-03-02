@@ -42,7 +42,7 @@ class DetectionDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.dataset[idx]
 
-        image = np.array(sample["image"])
+        image = np.array(sample["image"].convert("RGB"))
 
         bboxes = sample['objects']["bbox"]  # list of bounding boxes
         labels = sample['objects']["category"]  # list of integer labels

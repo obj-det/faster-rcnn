@@ -282,6 +282,7 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
             # Move images and targets to the device
             images = images.to(device)
             targets = add_batch_idx_to_targets(targets)
+            # print(images.size(), targets[0]['boxes_with_label'].size(), flush=True)
             gt = torch.cat([t['boxes_with_label'] for t in targets], dim=0).to(device)
             rpn_gt = gt.clone()
             # Convert labels to binary for the RPN (foreground vs background)
@@ -444,7 +445,6 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
             # Move images to device.
             image_batch = image_batch.to(device)
             targets = add_batch_idx_to_targets(targets)
-            gt = torch.cat([t['boxes_with_label'] for t in targets], dim=0).to(device)
 
             # Process ground truth to build COCO annotations.
             for batch_idx, target in enumerate(targets):
@@ -462,8 +462,8 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                 boxes = target['boxes_with_label'].cpu()
                 for box_idx in range(boxes.shape[0]):
                     x1, y1, x2, y2 = boxes[box_idx, 1:5].tolist()
-                    width = x2 - x1 + 1
-                    height = y2 - y1 + 1
+                    width = x2 - x1
+                    height = y2 - y1
                     category_id = int(boxes[box_idx, 5].item())
                     ann_id += 1
                     annotations.append({
@@ -501,6 +501,7 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                 batch_mask = rois[:, 0] == batch_idx
                 batch_rois = rois[batch_mask]
                 batch_scores = scores[batch_mask]
+                batch_scores = F.softmax(batch_scores, dim=1)
 
                 # Apply Non-Maximum Suppression (NMS) per batch.
                 keep = nms(batch_rois, batch_scores[:, 1],
@@ -520,6 +521,10 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                 all_proposals = torch.cat(proposals_list, dim=0).detach()
             else:
                 continue
+            
+            # print('='*10)
+            # print(len(all_proposals))
+            # print('='*10)
 
             # For each image in the batch, run the detection head to obtain final predictions.
             levels = sorted([int(x[-1]) for x in rpn_out.keys()])
