@@ -117,9 +117,9 @@ if not os.path.exists(checkpoint_dir):
     os.makedirs(checkpoint_dir)
 
 train_dataset = DetectionDataset(filtered_train_ds, transform_pipeline, preprocess)
-train_dataloader = DataLoader(train_dataset, collate_fn=collate_fn, batch_size=8, shuffle=True)
+train_dataloader = DataLoader(train_dataset, collate_fn=collate_fn, batch_size=16, shuffle=True)
 val_dataset = DetectionDataset(filtered_val_ds, transform_pipeline, preprocess)
-val_dataloader = DataLoader(val_dataset, collate_fn=collate_fn, batch_size=8, shuffle=False)
+val_dataloader = DataLoader(val_dataset, collate_fn=collate_fn, batch_size=16, shuffle=False)
 
 img_shape = (600, 600)
 anchors = generate_anchors(ratios=anchor_box_ratios, scales=anchor_box_scales)
@@ -129,7 +129,7 @@ for k in layer_size_map.keys():
     layer_h, layer_w = layer_size_map[k]
     layer_to_shifted_anchors[k] = torch.from_numpy(shift((anchors), layer_h, layer_w, img_shape[0] // layer_h)).to(device).float()
 
-num_epochs = 10
+num_epochs = 24
 for epoch in range(num_epochs):
     train_loop(1, train_dataloader, backbone, fpn, rpn, head, optimizer, device,
                layer_to_shifted_anchors, img_shape, num_classes, pooled_height, pooled_width, train_logger)
