@@ -1,7 +1,7 @@
 # Dataset Configuration
 dataset:
   name: "detection-datasets/coco"
-  tgt_categories: [16]
+  tgt_categories: [6]
   filter_empty_boxes: true
 
 # Training Configuration
@@ -10,7 +10,7 @@ training:
   shuffle: true
   num_epochs: 24
   learning_rate: 1e-4
-  optimizer: "adam"  # options: adam, sgd, etc.
+  optimizer: "adam"  # options: adam, sgd
   weight_decay: 0.0001
   momentum: 0.9  # for SGD
 
@@ -89,8 +89,8 @@ checkpoints:
   save_dir: "checkpoints"
   save_frequency: 1  # save every N epochs
   save_best: true
-  metric_to_monitor: "val_loss"
+  metric_to_monitor: "AP_0.50"
 
 # COCO Evaluation
 evaluation:
-  ap_iou_thresholds: [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]
+  ap_iou_thresholds: [0.5, 0.75, 0.95]

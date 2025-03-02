@@ -17,7 +17,6 @@ class Backbone(nn.Module):
 
     def register_forward_hooks(self):
         for layer_name, layer_idx in self.output_layer_map.items():
-            print(layer_name, layer_idx)
             self.vgg16[layer_idx].register_forward_hook(lambda _module, _inputs, outputs, name=layer_name: self.hook_fn(outputs, name))
 
     def forward(self, x):

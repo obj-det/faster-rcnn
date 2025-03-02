@@ -37,7 +37,8 @@ def main():
     
     # Setup transforms and preprocessing
     preprocess_transform = setup_preprocess_transform(config)
-    augmentation_transform = setup_augmentation_transform(config)
+    augmentation_transform_train = setup_augmentation_transform(config, mode='train')
+    augmentation_transform_test = setup_augmentation_transform(config, mode='test')
     
     # Setup model components
     models = setup_models(config, num_classes, device)
@@ -50,8 +51,8 @@ def main():
     train_logger, val_logger = setup_logging(config)
     
     # Setup datasets and dataloaders
-    train_dataset = DetectionDataset(filtered_train_ds, augmentation_transform, preprocess_transform)
-    val_dataset = DetectionDataset(filtered_val_ds, augmentation_transform, preprocess_transform)
+    train_dataset = DetectionDataset(filtered_train_ds, augmentation_transform_train, preprocess_transform)
+    val_dataset = DetectionDataset(filtered_val_ds, augmentation_transform_test, preprocess_transform)
     train_dataloader, val_dataloader = setup_dataloaders(config, train_dataset, val_dataset, collate_fn)
     
     # Setup anchors
@@ -78,7 +79,7 @@ def main():
         train_loop(
             1, train_dataloader, backbone, fpn, rpn, head, optimizer, device,
             layer_to_shifted_anchors, img_shape, num_classes, 
-            pooled_height, pooled_width, train_logger, config
+            pooled_height, pooled_width, train_logger, config['model']
         )
         
         # Validation
@@ -86,7 +87,7 @@ def main():
         metrics = validation_loop(
             val_dataloader, backbone, fpn, rpn, head, device,
             layer_to_shifted_anchors, img_shape, num_classes, 
-            pooled_height, pooled_width, val_logger, config
+            pooled_height, pooled_width, val_logger, config['model'], config['evaluation']['ap_iou_thresholds']
         )
         
         # Get validation metrics
@@ -101,7 +102,7 @@ def main():
         should_save_frequency = (epoch + 1) % save_frequency == 0
         
         # Check if we should save based on best metrics
-        metric_to_monitor = config['checkpoints'].get('metric_to_monitor', 'val_loss')
+        metric_to_monitor = config['checkpoints']['metric_to_monitor']
         is_better = False
         
         if metric_to_monitor == 'val_loss' and val_loss < best_val_loss:

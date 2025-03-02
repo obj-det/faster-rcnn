@@ -32,14 +32,18 @@ def setup_dataset(config):
     train_ds = ds['train']
     val_ds = ds['val']
 
-    tgt_categories = config['dataset'].get('tgt_categories', [])
+    tgt_categories = config['dataset']['tgt_categories']
     
-    mapped_train_ds = train_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories), load_from_cache_file=False)
-    mapped_val_ds = val_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories), load_from_cache_file=False)
+    # mapped_train_ds = train_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories), load_from_cache_file=False)
+    # mapped_val_ds = val_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories), load_from_cache_file=False)
+    mapped_train_ds = train_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories))
+    mapped_val_ds = val_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories))
     
     if config['dataset']['filter_empty_boxes']:
-        filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
-        filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
+        # filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
+        # filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
+        filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0)
+        filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0)
     else:
         filtered_train_ds = mapped_train_ds
         filtered_val_ds = mapped_val_ds
@@ -64,7 +68,7 @@ def setup_preprocess_transform(config):
     ])
     return preprocess_pipeline
 
-def setup_augmentation_transform(config):
+def setup_augmentation_transform(config, mode):
     """Create an augmentation pipeline with Albumentations, including bbox support."""
     aug_transforms = []
     
@@ -72,37 +76,38 @@ def setup_augmentation_transform(config):
     width, height = config['image']['shape']
     aug_transforms.append(A.Resize(height, width))
     
-    # Apply horizontal flip if specified.
-    if config['augmentation']['horizontal_flip_prob'] > 0:
-        aug_transforms.append(A.HorizontalFlip(p=config['augmentation']['horizontal_flip_prob']))
-    
-    # Apply vertical flip if specified.
-    if config['augmentation']['vertical_flip_prob'] > 0:
-        aug_transforms.append(A.VerticalFlip(p=config['augmentation']['vertical_flip_prob']))
-    
-    # Random crop augmentation (you may adjust crop size as needed).
-    if config['augmentation']['random_crop_prob'] > 0:
-        # Example: crop to 80% of the original size.
-        crop_width = int(0.8 * width)
-        crop_height = int(0.8 * height)
-        aug_transforms.append(A.RandomCrop(width=crop_width, height=crop_height, p=config['augmentation']['random_crop_prob']))
-    
-    # Brightness and contrast adjustment.
-    if config['augmentation']['brightness_range'] or config['augmentation']['contrast_range']:
-        # Calculate limits: Albumentations expects limits relative to zero.
-        brightness_limit = (config['augmentation']['brightness_range'][0] - 1, config['augmentation']['brightness_range'][1] - 1)
-        contrast_limit = (config['augmentation']['contrast_range'][0] - 1, config['augmentation']['contrast_range'][1] - 1)
-        aug_transforms.append(A.RandomBrightnessContrast(brightness_limit=brightness_limit, contrast_limit=contrast_limit, p=0.5))
-    
-    # Saturation and hue adjustment.
-    if config['augmentation']['saturation_range'] or config['augmentation']['hue_range']:
-        # Note: Hue and saturation limits might need scaling; adjust as appropriate.
-        aug_transforms.append(A.HueSaturationValue(
-            hue_shift_limit=int(config['augmentation']['hue_range'][1]*100),  
-            sat_shift_limit=int((config['augmentation']['saturation_range'][1]-1)*100),
-            val_shift_limit=0,
-            p=0.5
-        ))
+    if mode == 'train':
+        # Apply horizontal flip if specified.
+        if config['augmentation'].get('horizontal_flip_prob', 0) > 0:
+            aug_transforms.append(A.HorizontalFlip(p=config['augmentation']['horizontal_flip_prob']))
+        
+        # Apply vertical flip if specified.
+        if config['augmentation'].get('vertical_flip_prob', 0) > 0:
+            aug_transforms.append(A.VerticalFlip(p=config['augmentation']['vertical_flip_prob']))
+        
+        # Random crop augmentation (you may adjust crop size as needed).
+        if config['augmentation'].get('random_crop_prob', 0) > 0:
+            # Example: crop to 80% of the original size.
+            crop_width = int(0.8 * width)
+            crop_height = int(0.8 * height)
+            aug_transforms.append(A.RandomCrop(width=crop_width, height=crop_height, p=config['augmentation']['random_crop_prob']))
+        
+        # Brightness and contrast adjustment.
+        if config['augmentation'].get('brightness_range', []) or config['augmentation'].get('contrast_range', []):
+            # Calculate limits: Albumentations expects limits relative to zero.
+            brightness_limit = (config['augmentation']['brightness_range'][0] - 1, config['augmentation']['brightness_range'][1] - 1)
+            contrast_limit = (config['augmentation']['contrast_range'][0] - 1, config['augmentation']['contrast_range'][1] - 1)
+            aug_transforms.append(A.RandomBrightnessContrast(brightness_limit=brightness_limit, contrast_limit=contrast_limit, p=0.5))
+        
+        # Saturation and hue adjustment.
+        if config['augmentation'].get('hue_range', []) or config['augmentation'].get('saturation_range', []):
+            # Note: Hue and saturation limits might need scaling; adjust as appropriate.
+            aug_transforms.append(A.HueSaturationValue(
+                hue_shift_limit=int(config['augmentation']['hue_range'][1]*100),  
+                sat_shift_limit=int((config['augmentation']['saturation_range'][1]-1)*100),
+                val_shift_limit=0,
+                p=0.5
+            ))
     
     # Create the Albumentations pipeline with bbox parameters.
     transform_pipeline = A.Compose(
@@ -112,7 +117,7 @@ def setup_augmentation_transform(config):
     return transform_pipeline
 
 
-def setup_models(config, num_classes, device):
+def setup_models(config, num_classes, device, ckpt_path=None):
     """Initialize and return models based on configuration"""
     
     # Extract configuration
@@ -126,7 +131,7 @@ def setup_models(config, num_classes, device):
     # Setup FPN parameters
     fpn_in_channels = [layer_depth_map[k] for k in sorted(output_layer_map.keys(), key=lambda x: int(x[-1]))]
     fpn_out_channels = fpn_config['out_channels']
-    
+
     # Create models
     backbone = Backbone(output_layer_map).to(device)
     fpn = FPN(in_channels=fpn_in_channels, out_channels=fpn_out_channels).to(device)
@@ -145,6 +150,13 @@ def setup_models(config, num_classes, device):
         num_classes=num_classes
     ).to(device)
     
+    if ckpt_path:
+        ckpt = torch.load(ckpt_path)
+        backbone.load_state_dict(ckpt['backbone_state_dict'])
+        fpn.load_state_dict(ckpt['fpn_state_dict'])
+        rpn.load_state_dict(ckpt['rpn_state_dict'])
+        head.load_state_dict(ckpt['head_state_dict'])
+
     return backbone, fpn, rpn, head
 
 def setup_optimizer(config, models):
@@ -157,8 +169,8 @@ def setup_optimizer(config, models):
             list(fpn.parameters()) +
             list(rpn.parameters()) +
             list(head.parameters()),
-            lr=config['training']['learning_rate'],
-            weight_decay=config['training']['weight_decay']
+            lr=float(config['training']['learning_rate']),
+            weight_decay=float(config['training']['weight_decay'])
         )
     elif config['training']['optimizer'].lower() == 'sgd':
         optimizer = optim.SGD(
@@ -166,9 +178,9 @@ def setup_optimizer(config, models):
             list(fpn.parameters()) +
             list(rpn.parameters()) +
             list(head.parameters()),
-            lr=config['training']['learning_rate'],
-            momentum=config['training']['momentum'],
-            weight_decay=config['training']['weight_decay']
+            lr=float(config['training']['learning_rate']),
+            momentum=float(config['training']['momentum']),
+            weight_decay=float(config['training']['weight_decay'])
         )
     else:
         raise ValueError(f"Unsupported optimizer: {config['training']['optimizer']}")

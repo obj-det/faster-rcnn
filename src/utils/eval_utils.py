@@ -13,7 +13,7 @@ class CocoEvaluator:
         self.coco_gt = coco_gt
         self.predictions = []
 
-    def update(self, proposals, bbox_deltas, cls_scores, gt, im_shape):
+    def update(self, proposals, bbox_deltas, cls_scores, image_id, im_shape):
         """
         Store predictions for evaluation after decoding bbox deltas.
 
@@ -21,8 +21,7 @@ class CocoEvaluator:
             proposals (Tensor): [N, 5] tensor of proposals (batch_idx, x1, y1, x2, y2).
             bbox_deltas (Tensor): Predicted bbox deltas (shape: [N, 4]).
             cls_scores (Tensor): Predicted classification scores.
-            gt (Tensor): Ground truth boxes for the image.
-                       Assumes the first column contains the image_id.
+            image_id (int): The COCO image ID for this set of predictions.
             im_shape (tuple): (height, width) of the image.
         """
         # Decode final boxes using the proposals (excluding batch index) and bbox deltas.
@@ -33,8 +32,7 @@ class CocoEvaluator:
         scores = scores.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
 
-        # NOTE: This assumes a single image per batch.
-        image_id = int(gt[0, 0].item())
+        # Add predictions using the provided image_id
         for box, score, label in zip(boxes, scores, labels):
             self.predictions.append({
                 "image_id": image_id,
@@ -57,6 +55,7 @@ class CocoEvaluator:
                   If iou_thresh is None, returns metrics averaged over the default range.
                   Otherwise returns metrics for that specific IoU threshold.
         """
+
         coco_dt = self.coco_gt.loadRes(self.predictions)
         coco_eval = COCOeval(self.coco_gt, coco_dt, "bbox")
         if iou_thresh is not None:
@@ -64,17 +63,18 @@ class CocoEvaluator:
         coco_eval.evaluate()
         coco_eval.accumulate()
         # Optionally, you can call coco_eval.summarize() to print the summary.
+        coco_eval.summarize()
 
         if iou_thresh is None:
             # Use default summary indices (using average over multiple thresholds)
-            ap_small = coco_eval.stats[3]
-            ap_medium = coco_eval.stats[4]
-            ap_large = coco_eval.stats[5]
+            ap_small = coco_eval.stats[3] if len(coco_eval.stats) > 3 else None
+            ap_medium = coco_eval.stats[4] if len(coco_eval.stats) > 4 else None
+            ap_large = coco_eval.stats[5] if len(coco_eval.stats) > 5 else None
             return {"AP_small": ap_small, "AP_medium": ap_medium, "AP_large": ap_large}
         else:
             # When using a single IoU threshold, stats[0] is the AP at that threshold.
             # The indices for small, medium, large might still be in positions 3, 4, 5.
-            ap = coco_eval.stats[0]
+            ap = coco_eval.stats[0] if len(coco_eval.stats) > 0 else None
             ap_small = coco_eval.stats[3] if len(coco_eval.stats) > 3 else None
             ap_medium = coco_eval.stats[4] if len(coco_eval.stats) > 4 else None
             ap_large = coco_eval.stats[5] if len(coco_eval.stats) > 5 else None
