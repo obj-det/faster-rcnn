@@ -9,7 +9,7 @@ from torchvision import transforms
 import albumentations as A
 from collections import defaultdict
 
-from src.backbone import Backbone
+from src.backbones import Backbone, ResNetBackbone
 from src.fpn import FPN
 from src.rpn import RPN
 from src.head import DetectionHead
@@ -47,13 +47,18 @@ def setup_dataset(config):
     else:
         filtered_train_ds = mapped_train_ds
         filtered_val_ds = mapped_val_ds
-    
+
+    filtered_train_ds[0]['image'].save('sample_train.jpg')
+    filtered_val_ds[0]['image'].save('sample_val.jpg')
+
     # Count categories for determining num_classes
     category_to_count = defaultdict(int)
     for sample in filtered_train_ds:
         for obj in sample["objects"]["category"]:
             category_to_count[obj] += 1
     
+    print(category_to_count)
+
     print(f"Found {len(category_to_count)} classes in dataset")
     return filtered_train_ds, filtered_val_ds, category_to_count
 
@@ -71,51 +76,54 @@ def setup_preprocess_transform(config):
 def setup_augmentation_transform(config, mode):
     """Create an augmentation pipeline with Albumentations, including bbox support."""
     aug_transforms = []
-    
-    # Resize using the image shape defined in config.
-    width, height = config['image']['shape']
-    aug_transforms.append(A.Resize(height, width))
-    
+
     if mode == 'train':
         # Apply horizontal flip if specified.
         if config['augmentation'].get('horizontal_flip_prob', 0) > 0:
             aug_transforms.append(A.HorizontalFlip(p=config['augmentation']['horizontal_flip_prob']))
-        
+
         # Apply vertical flip if specified.
         if config['augmentation'].get('vertical_flip_prob', 0) > 0:
             aug_transforms.append(A.VerticalFlip(p=config['augmentation']['vertical_flip_prob']))
-        
-        # Random crop augmentation (you may adjust crop size as needed).
-        if config['augmentation'].get('random_crop_prob', 0) > 0:
-            # Example: crop to 80% of the original size.
-            crop_width = int(0.8 * width)
-            crop_height = int(0.8 * height)
-            aug_transforms.append(A.RandomCrop(width=crop_width, height=crop_height, p=config['augmentation']['random_crop_prob']))
-        
+
+        # Use RandomResizedCrop instead of RandomCrop.
+        # This crop will take a random portion of the image (e.g., between 80% and 100% of the original area)
+        # and then resize it to the target shape.
+        # if config['augmentation'].get('random_crop_prob', 0) > 0:
+        #     height, width = config['image']['shape']
+        #     aug_transforms.append(A.RandomResizedCrop(
+        #         size=(height, width),
+        #         scale=(0.8, 1.0),
+        #         ratio=(0.75, 1.33),
+        #         p=config['augmentation']['random_crop_prob']
+        #     ))
+
+
         # Brightness and contrast adjustment.
         if config['augmentation'].get('brightness_range', []) or config['augmentation'].get('contrast_range', []):
-            # Calculate limits: Albumentations expects limits relative to zero.
             brightness_limit = (config['augmentation']['brightness_range'][0] - 1, config['augmentation']['brightness_range'][1] - 1)
             contrast_limit = (config['augmentation']['contrast_range'][0] - 1, config['augmentation']['contrast_range'][1] - 1)
             aug_transforms.append(A.RandomBrightnessContrast(brightness_limit=brightness_limit, contrast_limit=contrast_limit, p=0.5))
-        
+
         # Saturation and hue adjustment.
         if config['augmentation'].get('hue_range', []) or config['augmentation'].get('saturation_range', []):
-            # Note: Hue and saturation limits might need scaling; adjust as appropriate.
             aug_transforms.append(A.HueSaturationValue(
-                hue_shift_limit=int(config['augmentation']['hue_range'][1]*100),  
+                hue_shift_limit=int(config['augmentation']['hue_range'][1]*100),
                 sat_shift_limit=int((config['augmentation']['saturation_range'][1]-1)*100),
                 val_shift_limit=0,
                 p=0.5
             ))
     
-    # Create the Albumentations pipeline with bbox parameters.
+    # Finally, if you want to ensure a consistent output size, you can also apply a Resize at the end.
+    # However, RandomResizedCrop already outputs images at the specified size.
+    height, width = config['image']['shape']
+    aug_transforms.append(A.Resize(height, width))
+    
     transform_pipeline = A.Compose(
         aug_transforms,
         bbox_params=A.BboxParams(format="pascal_voc", label_fields=["category"])
     )
     return transform_pipeline
-
 
 def setup_models(config, num_classes, device, ckpt_path=None):
     """Initialize and return models based on configuration"""
@@ -133,7 +141,12 @@ def setup_models(config, num_classes, device, ckpt_path=None):
     fpn_out_channels = fpn_config['out_channels']
 
     # Create models
-    backbone = Backbone(output_layer_map).to(device)
+    if backbone_config['type'] == 'vgg16':
+        backbone = Backbone(output_layer_map).to(device)
+    elif backbone_config['type'] == 'resnet101':
+        backbone = ResNetBackbone(output_layer_map).to(device)
+    else:
+        raise ValueError(f"Unsupported backbone: {config['backbone']['type']}")
     fpn = FPN(in_channels=fpn_in_channels, out_channels=fpn_out_channels).to(device)
     
     # Setup RPN parameters
@@ -151,7 +164,7 @@ def setup_models(config, num_classes, device, ckpt_path=None):
     ).to(device)
     
     if ckpt_path:
-        ckpt = torch.load(ckpt_path)
+        ckpt = torch.load(ckpt_path, weights_only=False)
         backbone.load_state_dict(ckpt['backbone_state_dict'])
         fpn.load_state_dict(ckpt['fpn_state_dict'])
         rpn.load_state_dict(ckpt['rpn_state_dict'])

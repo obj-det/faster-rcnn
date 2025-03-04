@@ -1,5 +1,8 @@
 import os
 import torch
+from torchvision.transforms.functional import to_pil_image
+from PIL import Image
+import numpy as np
 import argparse
 from src.utils.config_utils import (
     load_config, 
@@ -53,6 +56,40 @@ def main():
     # Setup datasets and dataloaders
     train_dataset = DetectionDataset(filtered_train_ds, augmentation_transform_train, preprocess_transform)
     val_dataset = DetectionDataset(filtered_val_ds, augmentation_transform_test, preprocess_transform)
+    
+    save_dir = os.path.join('./', 'sample_images')
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Process and save 5 augmented train images.
+    for i in range(5):
+        sample = filtered_train_ds[i]
+        # Ensure the image is in RGB.
+        image = np.array(sample["image"].convert("RGB"))
+        
+        # If you don't want to affect bboxes or if they aren't needed here,
+        # pass empty lists (the transform is still applied to the image).
+        transformed = augmentation_transform_train(image=image, bboxes=[], category=[])
+        aug_image = transformed["image"]
+        
+        # Convert numpy array back to PIL image.
+        image_pil = Image.fromarray(aug_image)
+        image_path = os.path.join(save_dir, f"train_image_{i}.png")
+        image_pil.save(image_path)
+        print(f"Saved {image_path}")
+
+    # Process and save 5 augmented val images.
+    for i in range(5):
+        sample = filtered_val_ds[i]
+        image = np.array(sample["image"].convert("RGB"))
+        
+        transformed = augmentation_transform_test(image=image, bboxes=[], category=[])
+        aug_image = transformed["image"]
+        
+        image_pil = Image.fromarray(aug_image)
+        image_path = os.path.join(save_dir, f"val_image_{i}.png")
+        image_pil.save(image_path)
+        print(f"Saved {image_path}")
+
     train_dataloader, val_dataloader = setup_dataloaders(config, train_dataset, val_dataset, collate_fn)
     
     # Setup anchors
@@ -77,15 +114,21 @@ def main():
         
         # Training
         train_loop(
-            1, train_dataloader, backbone, fpn, rpn, head, optimizer, device,
+            epoch+1, config['training']['grad_accumulation_steps'], train_dataloader, backbone, fpn, rpn, head, optimizer, device,
             layer_to_shifted_anchors, img_shape, num_classes, 
             pooled_height, pooled_width, train_logger, config['model']
         )
         
-        # Validation
-        print(f'Starting Validation for epoch {epoch+1}')
+        # # Validation
+        # print(f'Starting Validation for epoch {epoch+1}')
+        # _ = validation_loop(
+        #     train_dataloader, backbone, fpn, rpn, head, device,
+        #     layer_to_shifted_anchors, img_shape, num_classes, 
+        #     pooled_height, pooled_width, val_logger, config['model'], config['evaluation']['ap_iou_thresholds']
+        # )
+        
         metrics = validation_loop(
-            val_dataloader, backbone, fpn, rpn, head, device,
+            epoch+1, val_dataloader, backbone, fpn, rpn, head, device,
             layer_to_shifted_anchors, img_shape, num_classes, 
             pooled_height, pooled_width, val_logger, config['model'], config['evaluation']['ap_iou_thresholds']
         )

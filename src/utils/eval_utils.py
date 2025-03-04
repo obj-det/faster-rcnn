@@ -32,16 +32,31 @@ class CocoEvaluator:
         scores = scores.detach().cpu().numpy()
         labels = labels.detach().cpu().numpy()
 
+        pos_scores = scores[labels == 1]
+
+        # print('='*50)
+        # print(pos_scores.min(), pos_scores.max(), pos_scores.mean(), pos_scores.std())
+        # quantiles = np.quantile(pos_scores, [0.25, 0.5, 0.75])
+        # print("25th percentile:", quantiles[0])
+        # print("Median:", quantiles[1])
+        # print("75th percentile:", quantiles[2])
+        # print(len(labels == 1))
+        # print('='*50)
+
         # Add predictions using the provided image_id
         for box, score, label in zip(boxes, scores, labels):
+            if int(label) == 0:
+                # Skip predictions where the model predicts background.
+                continue
+
             self.predictions.append({
                 "image_id": image_id,
                 "category_id": int(label),
                 "bbox": [
                     float(box[0]),
                     float(box[1]),
-                    float(box[2] - box[0] + 1),
-                    float(box[3] - box[1] + 1)
+                    float(box[2] - box[0]),
+                    float(box[3] - box[1])
                 ],
                 "score": float(score)
             })
