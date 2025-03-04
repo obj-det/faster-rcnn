@@ -7,22 +7,6 @@ from torch.utils.data import Dataset, DataLoader
 import albumentations as A
 import cv2
 
-# preprocess = transforms.Compose([   
-#     transforms.ToTensor(),
-#     transforms.Normalize(
-#         mean=[0.485, 0.456, 0.406],     # ImageNet mean
-#         std=[0.229, 0.224, 0.225]       # ImageNet std
-#     )
-# ])
-
-# transform_pipeline = A.Compose(
-#     [
-#         A.Resize(600, 600),
-#         A.HorizontalFlip(p=0.5)
-#     ],
-#     bbox_params=A.BboxParams(format="pascal_voc", label_fields=["category"])
-# )
-
 class DetectionDataset(Dataset):
     def __init__(self, hf_dataset, albumentations_transform, preprocess_transform):
         """
@@ -58,12 +42,16 @@ class DetectionDataset(Dataset):
         image_pil = Image.fromarray(aug_image).convert("RGB")
         image_tensor = self.preprocess_transform(image_pil)
 
+        original_bboxes = torch.tensor(bboxes, dtype=torch.float32)
+        aug_bboxes = torch.tensor(aug_bboxes, dtype=torch.float32)
         boxes_tensor = torch.tensor(aug_bboxes, dtype=torch.float32)
         labels_tensor = torch.tensor(aug_labels, dtype=torch.int64)
 
         boxes_with_label = torch.cat([boxes_tensor, labels_tensor.unsqueeze(1)], dim=1)
 
         target = {
+            "original_bboxes": original_bboxes,  # shape: [num_boxes, 4]
+            "aug_bboxes": aug_bboxes,  # shape: [num_boxes, 4]
             "boxes": boxes_tensor,   # shape: [num_boxes, 4]
             "labels": labels_tensor,  # shape: [num_boxes]
             "boxes_with_label": boxes_with_label  # shape: [num_boxes, 5]

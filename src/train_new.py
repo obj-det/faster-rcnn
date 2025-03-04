@@ -114,21 +114,21 @@ def main():
         
         # Training
         train_loop(
-            1, train_dataloader, backbone, fpn, rpn, head, optimizer, device,
+            epoch+1, config['training']['grad_accumulation_steps'], train_dataloader, backbone, fpn, rpn, head, optimizer, device,
             layer_to_shifted_anchors, img_shape, num_classes, 
             pooled_height, pooled_width, train_logger, config['model']
         )
         
-        # Validation
-        print(f'Starting Validation for epoch {epoch+1}')
-        _ = validation_loop(
-            train_dataloader, backbone, fpn, rpn, head, device,
-            layer_to_shifted_anchors, img_shape, num_classes, 
-            pooled_height, pooled_width, val_logger, config['model'], config['evaluation']['ap_iou_thresholds']
-        )
+        # # Validation
+        # print(f'Starting Validation for epoch {epoch+1}')
+        # _ = validation_loop(
+        #     train_dataloader, backbone, fpn, rpn, head, device,
+        #     layer_to_shifted_anchors, img_shape, num_classes, 
+        #     pooled_height, pooled_width, val_logger, config['model'], config['evaluation']['ap_iou_thresholds']
+        # )
         
         metrics = validation_loop(
-            val_dataloader, backbone, fpn, rpn, head, device,
+            epoch+1, val_dataloader, backbone, fpn, rpn, head, device,
             layer_to_shifted_anchors, img_shape, num_classes, 
             pooled_height, pooled_width, val_logger, config['model'], config['evaluation']['ap_iou_thresholds']
         )

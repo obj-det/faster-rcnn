@@ -9,59 +9,6 @@ def get_scores(rpn_output):
     scores = scores.permute(0, 3, 4, 1, 2).contiguous().view(B, -1, 2)
     return scores.view(-1, 2)
 
-def nms_old(rois, scores, iou_threshold=0.7, score_threshold=0.05):
-    keep_initial = torch.sigmoid(scores) > score_threshold
-
-    rois = rois[keep_initial]
-    scores = scores[keep_initial]
-
-    if rois.numel() == 0:
-        keep = torch.empty((0,), dtype=torch.int64, device=rois.device)
-
-    x1 = rois[:, 1]
-    y1 = rois[:, 2]
-    x2 = rois[:, 3]
-    y2 = rois[:, 4]
-
-    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-
-    _, order = scores.sort(descending=True)
-    keep = []
-
-    while order.numel() > 0:
-        i = order[0].item()
-        keep.append(i)
-
-        if order.numel() == 1:
-            break
-
-        # 4. Compute the coordinates for the intersection between the current box and all remaining boxes:
-        xx1 = torch.max(x1[i], x1[order[1:]])
-        yy1 = torch.max(y1[i], y1[order[1:]])
-        xx2 = torch.min(x2[i], x2[order[1:]])
-        yy2 = torch.min(y2[i], y2[order[1:]])
-        
-        # 5. Compute the width and height of the overlapping area:
-        w = (xx2 - xx1 + 1).clamp(min=0)
-        h = (yy2 - yy1 + 1).clamp(min=0)
-        inter = w * h  # Intersection area
-        
-        # 6. Compute the union area and the Intersection over Union (IoU):
-        union = areas[i] + areas[order[1:]] - inter
-        iou = inter / union
-
-        # 7. Identify boxes that have an IoU less than or equal to the threshold:
-        inds = (iou <= iou_threshold).nonzero(as_tuple=False).squeeze(-1)
-        if inds.numel() == 0:
-            break  # If no boxes remain with IoU below threshold, exit the loop.
-        
-        # 8. Update the list of indices (order) to consider for the next iteration.
-        # order[0] was the current box, so we only update the remaining ones:
-        order = order[inds + 1]
-
-    keep = torch.tensor(keep, dtype=torch.long, device=rois.device)
-    return keep
-
 def nms(rois, scores, iou_threshold=0.7, score_threshold=0.05):
     # Apply sigmoid to get probabilities and threshold them.
     keep_initial = scores > score_threshold
@@ -70,7 +17,7 @@ def nms(rois, scores, iou_threshold=0.7, score_threshold=0.05):
     
     if rois.numel() == 0:
         return torch.empty((0,), dtype=torch.int64, device=rois.device)
-    
+
     # Use the built-in, optimized NMS.
     keep = ops.nms(rois[:, 1:], scores, iou_threshold)
     return keep
@@ -145,82 +92,6 @@ def bilinear_interpolate(feature, x, y):
 
     # Compute the interpolated feature
     return Ia * wa + Ib * wb + Ic * wc + Id * wd
-
-def custom_roi_align(feature_map, rois, output_size, spatial_scale=1.0, sampling_ratio=2):
-    """
-    Custom ROI Align function.
-
-    Parameters:
-        feature_map (Tensor): Feature map of shape [B, C, H, W].
-        rois (Tensor): ROI tensor of shape [N, 5] where each ROI is [batch_idx, x1, y1, x2, y2].
-        output_size (tuple): (pooled_height, pooled_width) for the output.
-        spatial_scale (float): Factor to scale ROI coordinates to feature map space.
-        sampling_ratio (int): Number of samples per bin dimension. If <=0, adaptive sampling is used.
-    
-    Returns:
-        Tensor: ROI-aligned features of shape [N, C, pooled_height, pooled_width].
-    """
-    B, C, H, W = feature_map.shape
-    N = rois.shape[0]
-    pooled_height, pooled_width = output_size
-
-    # Prepare the output tensor.
-    output = torch.zeros((N, C, pooled_height, pooled_width), device=feature_map.device, dtype=feature_map.dtype)
-
-    # Process each ROI independently.
-    for n in range(N):
-        roi = rois[n]
-        batch_idx = int(roi[0].item())
-
-        # Scale the ROI coordinates to the feature map space.
-        x1 = roi[1] * spatial_scale
-        y1 = roi[2] * spatial_scale
-        x2 = roi[3] * spatial_scale
-        y2 = roi[4] * spatial_scale
-
-        # Compute the ROI's width and height (ensure minimum size of 1).
-        roi_width = max(x2 - x1 + 1, 1.0)
-        roi_height = max(y2 - y1 + 1, 1.0)
-
-        # Compute bin sizes
-        bin_size_w = roi_width / pooled_width
-        bin_size_h = roi_height / pooled_height
-
-        # Loop over each bin in the grid.
-        for ph in range(pooled_height):
-            for pw in range(pooled_width):
-                # Determine the bin boundaries.
-                bin_start_w = x1 + pw * bin_size_w
-                bin_start_h = y1 + ph * bin_size_h
-                bin_end_w = bin_start_w + bin_size_w
-                bin_end_h = bin_start_h + bin_size_h
-
-                # Decide how many samples to take. If sampling_ratio > 0, use that.
-                if sampling_ratio > 0:
-                    num_samples_w = sampling_ratio
-                    num_samples_h = sampling_ratio
-                else:
-                    num_samples_w = math.ceil(bin_size_w)
-                    num_samples_h = math.ceil(bin_size_h)
-
-                # Accumulate the interpolated features.
-                accumulated_val = torch.zeros(C, device=feature_map.device, dtype=feature_map.dtype)
-                count = 0
-
-                for iy in range(num_samples_h):
-                    # Compute the y coordinate for this sample.
-                    y = bin_start_h + (iy + 0.5) * bin_size_h / num_samples_h
-                    for ix in range(num_samples_w):
-                        # Compute the x coordinate for this sample.
-                        x = bin_start_w + (ix + 0.5) * bin_size_w / num_samples_w
-                        val = bilinear_interpolate(feature_map[batch_idx], x, y)
-                        accumulated_val += val
-                        count += 1
-
-                # The output for this bin is the average of sampled values.
-                output[n, :, ph, pw] = accumulated_val / count
-
-    return output
 
 def perform_roi_align(levels, all_proposals, fpn_features, pooled_height, pooled_width, img_shape):
     assigned_levels = map_rois_to_fpn_levels(all_proposals, min_level=levels[0], max_level=levels[-1])

@@ -1,0 +1,100 @@
+# Dataset Configuration
+dataset:
+  name: "detection-datasets/coco"
+  tgt_categories: [16]
+  filter_empty_boxes: true
+
+# Training Configuration
+training:
+  batch_size: 8
+  grad_accumulation_steps: 2
+  shuffle: true
+  num_epochs: 24
+  learning_rate: 1e-4
+  optimizer: "adam"  # options: adam, sgd
+  weight_decay: 0.0001
+  momentum: 0.9  # for SGD
+
+# Validation Configuration
+validation:
+  batch_size: 8
+  shuffle: false
+
+# Model Configuration
+model:
+  # Backbone Configuration
+  backbone:
+    type: "vgg16"
+    output_layers:
+      conv3: 16
+      conv4: 23
+      conv5: 30
+    layer_sizes:
+      conv3: [128, 128]
+      conv4: [64, 64]
+      conv5: [32, 32]
+    layer_depths:
+      conv3: 256
+      conv4: 512
+      conv5: 512
+  
+  # FPN Configuration  
+  fpn:
+    out_channels: 256
+  
+  # RPN Configuration
+  rpn:
+    anchor_box_ratios: [0.33, 0.5, 1, 2, 3]
+    anchor_box_scales: [4, 8, 16, 32]
+    nms_iou_thresh: 0.7
+    nms_score_thresh: 0.05
+    pre_nms_topk_train: 12000
+    nms_topk_train: 2000
+    pre_nms_topk_test: 6000
+    nms_topk_test: 300
+    rpn_train_batch_size: 256
+    rpn_pos_ratio: 0.5
+    rpn_pos_iou_thresh: 0.7
+    rpn_neg_iou_thresh: 0.3
+
+
+  # Detection Head Configuration
+  head:
+    pooled_height: 7
+    pooled_width: 7
+    detection_train_batch_size: 256
+    detection_pos_ratio: 0.5
+    detection_pos_iou_thresh: 0.5
+    detection_neg_iou_thresh: 0.5
+
+# Image Configuration
+image:
+  shape: [1024, 1024]
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  use_augmentation: true
+
+# Augmentation Configuration
+augmentation:
+  horizontal_flip_prob: 0.5
+  vertical_flip_prob: 0.0
+  brightness_range: [0.8, 1.2]
+  contrast_range: [0.8, 1.2]
+  hue_range: [-0.1, 0.1]
+  saturation_range: [0.9, 1.1]
+
+# Logging and Checkpoints
+logging:
+  train_log_filename: "train_metrics.log"
+  val_log_filename: "val_metrics.log"
+  log_dir: "logs"
+
+checkpoints:
+  save_dir: "checkpoints"
+  save_frequency: 1  # save every N epochs
+  save_best: true
+  metric_to_monitor: "AP_0.50"
+
+# COCO Evaluation
+evaluation:
+  ap_iou_thresholds: [0.5, 0.75, 0.95]

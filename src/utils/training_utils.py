@@ -5,6 +5,7 @@ from pycocotools.coco import COCO
 import tempfile
 import json
 import os
+from torchvision.transforms import ToPILImage
 
 from src.utils.anchor_utils import *
 from src.utils.roi_utils import *
@@ -253,7 +254,7 @@ def det_loss_fn(sampled_bbox_preds, sampled_scores, sampled_labels, sampled_bbox
     
     return cls_loss, loss_reg
 
-def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, device,
+def train_loop(epoch_num, accum_steps, dataloader, backbone, fpn, rpn, head, optimizer, device,
                layer_to_shifted_anchors, img_shape, num_classes, pooled_height, pooled_width, train_logger, config):
     """
     Unified training loop for the entire detection network using a single optimizer,
@@ -277,127 +278,136 @@ def train_loop(num_epochs, dataloader, backbone, fpn, rpn, head, optimizer, devi
     rpn.train()
     head.train()
 
-    for epoch in range(num_epochs):
-        for i, (images, targets) in enumerate(tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")):
-            # Move images and targets to the device
-            images = images.to(device)
-            targets = add_batch_idx_to_targets(targets)
-            # print(images.size(), targets[0]['boxes_with_label'].size(), flush=True)
-            gt = torch.cat([t['boxes_with_label'] for t in targets], dim=0).to(device)
-            rpn_gt = gt.clone()
-            # Convert labels to binary for the RPN (foreground vs background)
-            rpn_gt[:, 5] = 1
+    leftover_count = len(dataloader) % accum_steps
 
-            # Forward pass: Backbone -> FPN.
-            features = backbone(images)
-            fpn_features = fpn(features)
+    optimizer.zero_grad()
 
-            # Forward pass through the RPN at each FPN level.
-            rpn_out = {}
-            for k, feature_map in fpn_features.items():
-                rpn_out[k] = rpn(feature_map)
-            sorted_rpn_keys = sorted(rpn_out.keys())
+    for i, (images, targets) in enumerate(tqdm(dataloader, desc="Training")):
+        # Move images and targets to the device
+        images = images.to(device)
+        targets = add_batch_idx_to_targets(targets)
+        # print(images.size(), targets[0]['boxes_with_label'].size(), flush=True)
+        gt = torch.cat([t['boxes_with_label'] for t in targets], dim=0).to(device)
+        rpn_gt = gt.clone()
+        # Convert labels to binary for the RPN (foreground vs background)
+        rpn_gt[:, 5] = 1
 
-            # Aggregate RPN outputs.
-            all_rpn_deltas = torch.cat(
-                [collect_rpn_deltas(rpn_out[k][1]) for k in sorted_rpn_keys], dim=0
+        # Forward pass: Backbone -> FPN.
+        features = backbone(images)
+        fpn_features = fpn(features)
+
+        # Forward pass through the RPN at each FPN level.
+        rpn_out = {}
+        for k, feature_map in fpn_features.items():
+            rpn_out[k] = rpn(feature_map)
+        sorted_rpn_keys = sorted(rpn_out.keys())
+
+        # Aggregate RPN outputs.
+        all_rpn_deltas = torch.cat(
+            [collect_rpn_deltas(rpn_out[k][1]) for k in sorted_rpn_keys], dim=0
+        )
+        rois = torch.cat(
+            [generate_rois(rpn_out[k][1], layer_to_shifted_anchors[k], img_shape)
+                for k in sorted_rpn_keys], dim=0
+        )
+        scores = torch.cat(
+            [get_scores(rpn_out[k][0]) for k in sorted_rpn_keys], dim=0
+        )
+
+        # Matching and sampling for RPN training.
+        (rpn_sampled_proposals, rpn_sampled_scores, rpn_sampled_labels,
+            rpn_sampled_bbox_targets, rpn_sampled_indices) = matching_and_sampling(
+                rois, scores, rpn_gt, config['rpn']['rpn_train_batch_size'], pos_iou_thresh=config['rpn']['rpn_pos_iou_thresh'], neg_iou_thresh=config['rpn']['rpn_neg_iou_thresh'], pos_fraction=config['rpn']['rpn_pos_ratio']
             )
-            rois = torch.cat(
-                [generate_rois(rpn_out[k][1], layer_to_shifted_anchors[k], img_shape)
-                 for k in sorted_rpn_keys], dim=0
-            )
-            scores = torch.cat(
-                [get_scores(rpn_out[k][0]) for k in sorted_rpn_keys], dim=0
-            )
+        rpn_sampled_deltas = all_rpn_deltas[rpn_sampled_indices]
 
-            # Matching and sampling for RPN training.
-            (rpn_sampled_proposals, rpn_sampled_scores, rpn_sampled_labels,
-             rpn_sampled_bbox_targets, rpn_sampled_indices) = matching_and_sampling(
-                 rois, scores, rpn_gt, config['rpn']['rpn_train_batch_size'], pos_iou_thresh=config['rpn']['rpn_pos_iou_thresh'], neg_iou_thresh=config['rpn']['rpn_neg_iou_thresh'], pos_fraction=config['rpn']['rpn_pos_ratio']
-             )
-            rpn_sampled_deltas = all_rpn_deltas[rpn_sampled_indices]
+        # Process proposals for the detection head.
+        unique_batches = rois[:, 0].unique()
+        all_proposals = []
+        all_scores = []
+        for batch_idx in unique_batches:
+            batch_mask = rois[:, 0] == batch_idx
+            batch_rois = rois[batch_mask]
+            batch_scores = scores[batch_mask]
+            batch_scores = F.softmax(batch_scores, dim=1)
+            
+            _, pre_nms_sorted_indices = torch.sort(batch_scores[:, 1], descending=True)
+            batch_rois = batch_rois[pre_nms_sorted_indices]
+            batch_scores = batch_scores[pre_nms_sorted_indices]
 
-            # Process proposals for the detection head.
-            unique_batches = rois[:, 0].unique()
-            all_proposals = []
-            all_scores = []
-            for batch_idx in unique_batches:
-                batch_mask = rois[:, 0] == batch_idx
-                batch_rois = rois[batch_mask]
-                batch_scores = scores[batch_mask]
-                batch_scores = F.softmax(batch_scores, dim=1)
+            batch_rois = batch_rois[:config['rpn']['pre_nms_topk_train']]
+            batch_scores = batch_scores[:config['rpn']['pre_nms_topk_train']]
+            
+            keep = nms(batch_rois, batch_scores[:, 1], iou_threshold=config['rpn']['nms_iou_thresh'], score_threshold=config['rpn']['nms_score_thresh'])
+            batch_rois = batch_rois[keep]
+            batch_scores = batch_scores[keep]
 
-                # Apply Non-Maximum Suppression (NMS) per batch.
-                keep = nms(batch_rois, batch_scores[:, 1], iou_threshold=config['rpn']['nms_iou_thresh'], score_threshold=config['rpn']['nms_score_thresh'])
-                batch_rois = batch_rois[keep]
-                batch_scores = batch_scores[keep]
+            # Sort proposals by score.
+            _, sorted_indices = torch.sort(batch_scores[:, 1], descending=True)
+            sorted_proposals = batch_rois[sorted_indices]
+            sorted_scores = batch_scores[sorted_indices]
 
-                # Sort proposals by score.
-                _, sorted_indices = torch.sort(batch_scores[:, 1], descending=True)
-                sorted_proposals = batch_rois[sorted_indices]
-                sorted_scores = batch_scores[sorted_indices]
+            K = config['rpn']['nms_topk_train']  # Adjust K based on your requirements.
+            topk_proposals = sorted_proposals[:K]
+            topk_scores = sorted_scores[:K]
 
-                K = config['rpn']['nms_topk_train']  # Adjust K based on your requirements.
-                topk_proposals = sorted_proposals[:K]
-                topk_scores = sorted_scores[:K]
+            all_proposals.append(topk_proposals)
+            all_scores.append(topk_scores)
 
-                all_proposals.append(topk_proposals)
-                all_scores.append(topk_scores)
+        all_proposals = torch.cat(all_proposals, dim=0).detach()
+        all_scores = torch.cat(all_scores, dim=0).detach()
 
-            all_proposals = torch.cat(all_proposals, dim=0).detach()
-            all_scores = torch.cat(all_scores, dim=0).detach()
+        # Matching and sampling for the detection head.
+        (sampled_proposals, sampled_scores, sampled_labels,
+            sampled_bbox_targets, _) = matching_and_sampling(
+                all_proposals, all_scores, gt, config['head']['detection_train_batch_size'], pos_iou_thresh=config['head']['detection_pos_iou_thresh'], neg_iou_thresh=config['head']['detection_neg_iou_thresh'], pos_fraction=config['head']['detection_pos_ratio']
+        
+        )
 
-            # Matching and sampling for the detection head.
-            (sampled_proposals, sampled_scores, sampled_labels,
-             sampled_bbox_targets, _) = matching_and_sampling(
-                 all_proposals, all_scores, gt, config['head']['detection_train_batch_size'], pos_iou_thresh=config['head']['detection_pos_iou_thresh'], neg_iou_thresh=config['head']['detection_neg_iou_thresh'], pos_fraction=config['head']['detection_pos_ratio']
-             )
-            # ROI Align: pool features corresponding to the proposals.
-            levels = sorted([int(x[-1]) for x in rpn_out.keys()])
-            aligned_proposals = perform_roi_align(
-                levels, sampled_proposals, fpn_features,
-                pooled_height, pooled_width, img_shape
-            )
+        # ROI Align: pool features corresponding to the proposals.
+        levels = sorted([int(x[-1]) for x in rpn_out.keys()])
+        aligned_proposals = perform_roi_align(
+            levels, sampled_proposals, fpn_features,
+            pooled_height, pooled_width, img_shape
+        )
 
-            # Forward pass through the detection head.
-            cls_scores, bbox_deltas = head(aligned_proposals)
+        # Forward pass through the detection head.
+        cls_scores, bbox_deltas = head(aligned_proposals)
 
-            # Compute losses.
-            rpn_cls_loss, rpn_bbox_loss = rpn_loss_fn(
-                rpn_sampled_deltas, rpn_sampled_scores,
-                rpn_sampled_labels, rpn_sampled_bbox_targets
-            )
-            det_cls_loss, det_bbox_loss = det_loss_fn(
-                bbox_deltas, cls_scores,
-                sampled_labels, sampled_bbox_targets, num_classes
-            )
-            total_loss = rpn_cls_loss + rpn_bbox_loss + det_cls_loss + det_bbox_loss
+        # Compute losses.
+        rpn_cls_loss, rpn_bbox_loss = rpn_loss_fn(
+            rpn_sampled_deltas, rpn_sampled_scores,
+            rpn_sampled_labels, rpn_sampled_bbox_targets
+        )
+        det_cls_loss, det_bbox_loss = det_loss_fn(
+            bbox_deltas, cls_scores,
+            sampled_labels, sampled_bbox_targets, num_classes
+        )
+        total_loss = rpn_cls_loss + rpn_bbox_loss + det_cls_loss + det_bbox_loss
 
-            # Backpropagation and parameter update.
-            optimizer.zero_grad()
-            total_loss.backward()
+        # Accumulate gradients.
+        if len(dataloader) - i <= leftover_count:
+            total_loss = total_loss / leftover_count
+        else:
+            total_loss = total_loss / accum_steps
+        
+        total_loss.backward()
+
+        # Backpropagation and parameter update.
+        if (i+1) % accum_steps == 0 or i == len(dataloader) - 1:
             optimizer.step()
+            optimizer.zero_grad()
 
-            # Build log message
-            log_message = (
-                f"Epoch: {epoch+1}, Iteration: {i+1}, Total Loss: {total_loss.item():.4f}, "
-                f"RPN_cls: {rpn_cls_loss.item():.4f}, RPN_bbox: {rpn_bbox_loss.item():.4f}, "
-                f"DET_cls: {det_cls_loss.item():.4f}, DET_bbox: {det_bbox_loss.item():.4f}"
-            )
-            # Log to file
-            train_logger.info(log_message)
+        # Build log message
+        log_message = (
+            f"Epoch: {epoch_num}, Iteration: {i+1}, Total Loss: {total_loss.item():.4f}, "
+            f"RPN_cls: {rpn_cls_loss.item():.4f}, RPN_bbox: {rpn_bbox_loss.item():.4f}, "
+            f"DET_cls: {det_cls_loss.item():.4f}, DET_bbox: {det_bbox_loss.item():.4f}"
+        )
+        # Log to file
+        train_logger.info(log_message)
 
-            if i % 25 == 0:
-                torch.save({
-                    'epoch': epoch + 1,
-                    'backbone_state_dict': backbone.state_dict(),
-                    'fpn_state_dict': fpn.state_dict(),
-                    'rpn_state_dict': rpn.state_dict(),
-                    'head_state_dict': head.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                }, f"checkpoints/model_epoch_{epoch+1}_iter_{i+1}.pth")
-
-def validation_loop(dataloader, backbone, fpn, rpn, head, device,
+def validation_loop(epoch_num, dataloader, backbone, fpn, rpn, head, device,
                         layer_to_shifted_anchors, img_shape, num_classes,
                         pooled_height, pooled_width, val_logger, config, ap_iou_thresholds):
     """
@@ -452,15 +462,30 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                 if img_idx not in image_id_map:
                     image_id = len(image_id_map) + 1  # COCO image IDs start from 1.
                     image_id_map[img_idx] = image_id
+                    # image_pil = ToPILImage()(image_batch[batch_idx].cpu())
+                    # # Convert to in-memory bytes
+                    # import base64
+                    # from io import BytesIO
+                    # buffer = BytesIO()
+                    # image_pil.save(buffer, format="PNG")
+                    # byte_data = buffer.getvalue()
+
+                    # # Encode as base64 for JSON
+                    # base64_str = base64.b64encode(byte_data).decode("utf-8")
                     images.append({
                         "id": image_id,
+                        # "image": base64_str,
                         "width": img_shape[1],
                         "height": img_shape[0]
                     })
                 else:
                     image_id = image_id_map[img_idx]
                 boxes = target['boxes_with_label'].cpu()
+                # original_boxes = target['original_bboxes'].cpu()
+                # aug_boxes = target['aug_bboxes'].cpu()
                 for box_idx in range(boxes.shape[0]):
+                    # orig_x1, orig_y1, orig_x2, orig_y2 = original_boxes[box_idx].tolist()
+                    # aug_x1, aug_y1, aug_x2, aug_y2 = aug_boxes[box_idx].tolist()
                     x1, y1, x2, y2 = boxes[box_idx, 1:5].tolist()
                     width = x2 - x1
                     height = y2 - y1
@@ -471,6 +496,8 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                         "image_id": image_id,
                         "category_id": category_id,
                         "bbox": [x1, y1, width, height],
+                        # "original_bbox": [orig_x1, orig_y1, orig_x2-orig_x1, orig_y2-orig_y1],
+                        # "aug_bbox": [aug_x1, aug_y1, aug_x2-aug_x1, aug_y2-aug_y1],
                         "area": width * height,
                         "iscrowd": 0
                     })
@@ -503,6 +530,13 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                 batch_scores = scores[batch_mask]
                 batch_scores = F.softmax(batch_scores, dim=1)
 
+                _, pre_nms_sorted_indices = torch.sort(batch_scores[:, 1], descending=True)
+                batch_rois = batch_rois[pre_nms_sorted_indices]
+                batch_scores = batch_scores[pre_nms_sorted_indices]
+
+                batch_rois = batch_rois[:config['rpn']['pre_nms_topk_test']]
+                batch_scores = batch_scores[:config['rpn']['pre_nms_topk_test']]
+
                 # Apply Non-Maximum Suppression (NMS) per batch.
                 keep = nms(batch_rois, batch_scores[:, 1],
                            iou_threshold=config['rpn']['nms_iou_thresh'],
@@ -532,29 +566,65 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
                 img_idx = i * image_batch.shape[0] + int(batch_idx.item())
                 image_id = image_id_map[img_idx]
 
+                # Filter proposals for this image
                 batch_mask = all_proposals[:, 0] == batch_idx
                 batch_proposals = all_proposals[batch_mask]
                 if batch_proposals.shape[0] == 0:
                     continue
 
-                # ROI Align to extract fixed-size features for each proposal.
-                batch_aligned_features = perform_roi_align(
+                # ROI Align
+                aligned_feats = perform_roi_align(
                     levels, batch_proposals, fpn_features,
                     pooled_height, pooled_width, img_shape
                 )
-                # Run detection head on these aligned features.
-                batch_cls_scores, batch_bbox_deltas = head(batch_aligned_features)
+                # Detection head
+                batch_cls_scores, batch_bbox_deltas = head(aligned_feats)
 
-                # Update the COCO evaluator with the predictions - FIX: Pass image_id directly
-                coco_evaluator.update(
-                    batch_proposals,
-                    batch_bbox_deltas,
-                    batch_cls_scores,
-                    image_id,
-                    img_shape
-                )
+                decoded_boxes = decode_boxes(batch_proposals[:, 1:], batch_bbox_deltas, img_shape)
+
+                all_probs = F.softmax(batch_cls_scores, dim=1)
+                confs, labels = torch.max(all_probs, dim=1)
+
+                fg_mask = (labels > 0)
+                final_boxes = decoded_boxes[fg_mask]
+                final_scores = confs[fg_mask]
+                final_labels = labels[fg_mask]
+
+                if final_boxes.numel() == 0:
+                    continue
+
+                final_keep = ops.nms(final_boxes, final_scores, 0.5)  # or any iou threshold you want
+                final_boxes = final_boxes[final_keep]
+                final_scores = final_scores[final_keep]
+                final_labels = final_labels[final_keep]
+
+                for box, score, label in zip(final_boxes, final_scores, final_labels):
+                    # skip background or invalid label=0
+                    label_int = int(label.item())
+                    score_float = float(score.item())
+                    x1, y1, x2, y2 = box.tolist()
+                    width = x2 - x1
+                    height = y2 - y1
+
+                    if label_int == 0:
+                        continue
+
+                    coco_evaluator.predictions.append({
+                        "image_id": image_id,
+                        "category_id": label_int,  # or map label->category ID
+                        "bbox": [x1, y1, width, height],
+                        "score": score_float
+                    })
 
     # After looping through the dataloader, create the COCO ground truth.
+    # with open('temp_gt.json', 'w') as f:
+    #     json.dump({
+    #         "images": images,
+    #         "annotations": annotations,
+    #         "categories": categories
+    #     }, f)
+    # with open('temp_preds.json', 'w') as f:
+    #     json.dump(coco_evaluator.predictions, f)
     with tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False) as f:
         json.dump({
             "images": images,
@@ -563,6 +633,7 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
         }, f)
         temp_file_name = f.name
 
+    # coco_gt = COCO('temp_gt.json')
     coco_gt = COCO(temp_file_name)
     coco_evaluator.coco_gt = coco_gt
 
@@ -571,7 +642,7 @@ def validation_loop(dataloader, backbone, fpn, rpn, head, device,
     ap_metrics_str = "\n".join(
         [f"{key:<20}: {value:.4f}" for key, value in sorted(ap_metrics.items())]
     )
-    val_logger.info("COCO Evaluation AP Metrics:\n" + ap_metrics_str)
+    val_logger.info(f"COCO Evaluation AP Metrics for Epoch {epoch_num}:\n" + ap_metrics_str)
 
     # Clean up the temporary file.
     try:

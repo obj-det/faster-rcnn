@@ -9,7 +9,7 @@ from torchvision import transforms
 import albumentations as A
 from collections import defaultdict
 
-from src.backbone import Backbone
+from src.backbones import Backbone, ResNetBackbone
 from src.fpn import FPN
 from src.rpn import RPN
 from src.head import DetectionHead
@@ -141,7 +141,12 @@ def setup_models(config, num_classes, device, ckpt_path=None):
     fpn_out_channels = fpn_config['out_channels']
 
     # Create models
-    backbone = Backbone(output_layer_map).to(device)
+    if backbone_config['type'] == 'vgg16':
+        backbone = Backbone(output_layer_map).to(device)
+    elif backbone_config['type'] == 'resnet101':
+        backbone = ResNetBackbone(output_layer_map).to(device)
+    else:
+        raise ValueError(f"Unsupported backbone: {config['backbone']['type']}")
     fpn = FPN(in_channels=fpn_in_channels, out_channels=fpn_out_channels).to(device)
     
     # Setup RPN parameters
