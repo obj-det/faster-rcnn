@@ -2,6 +2,7 @@
 dataset:
   name: "detection-datasets/coco"
   tgt_categories: [16]
+  category_names: ["dog"]
   filter_empty_boxes: true
 
 # Training Configuration
@@ -69,6 +70,8 @@ model:
     detection_pos_ratio: 0.5
     detection_pos_iou_thresh: 0.5
     detection_neg_iou_thresh: 0.5
+    detection_test_score_thresh: 0.0
+    detection_test_nms_iou_thresh: 0.5
 
 # Image Configuration
 image:
