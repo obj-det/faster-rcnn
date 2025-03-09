@@ -24,6 +24,9 @@ cd faster-rcnn
 # Create a conda environment with Python 3.10
 conda create --name my-env python=3.10
 
+# Install the package in development mode
+pip install -e .
+
 # Install dependencies
 pip install -r requirements.txt
 ```
