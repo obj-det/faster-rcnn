@@ -21,11 +21,11 @@ A PyTorch implementation of Faster R-CNN with Feature Pyramid Network (FPN) for 
 git clone https://github.com/yourusername/faster-rcnn.git
 cd faster-rcnn
 
-# Create a virtual environment (optional but recommended)
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or
-.\venv\Scripts\activate  # Windows
+# Create a conda environment with Python 3.10
+conda create --name my-env python=3.10
+
+# Install the package in development mode
+pip install -e .
 
 # Install dependencies
 pip install -r requirements.txt
