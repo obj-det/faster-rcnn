@@ -1,0 +1,11 @@
+torch>=1.9.0
+torchvision>=0.10.0
+numpy>=1.19.2
+Pillow>=8.2.0
+matplotlib>=3.3.4
+pycocotools>=2.0.2
+tqdm>=4.61.0
+PyYAML>=5.4.1
+albumentations>=1.0.0
+datasets>=1.11.0
+opencv-python>=4.5.3

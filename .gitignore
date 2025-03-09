@@ -2,7 +2,6 @@ PKG-INFO
 
 *.pyc
 *.png
-*.txt
 *.log
 *.pth
 
