@@ -1,3 +1,18 @@
+"""
+Inference script for Faster R-CNN object detection.
+
+This script provides a command-line interface for running inference with a trained
+Faster R-CNN model on a directory of images. It handles:
+- Loading model checkpoints
+- Setting up model components and preprocessing
+- Running inference on batches of images
+- Visualizing and saving detection results
+
+Example usage:
+    python inference.py --config config.yaml --checkpoint model.pth \\
+                       --input-dir images/ --output-dir results/
+"""
+
 import os
 import torch
 import argparse
@@ -11,7 +26,16 @@ from src.utils.config_utils import (
 from src.utils.inference_utils import *
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train object detection model')
+    """Parse command line arguments for inference.
+    
+    Returns:
+        argparse.Namespace: Parsed command line arguments containing:
+            - config: Path to configuration YAML file
+            - checkpoint: Path to model checkpoint file
+            - input_dir: Directory containing input images
+            - output_dir: Directory to save visualization results
+    """
+    parser = argparse.ArgumentParser(description='Run inference with trained Faster R-CNN model')
     parser.add_argument('--config', type=str, default='config.yaml', help='Path to configuration file')
     parser.add_argument('--checkpoint', type=str, default=None, help='Path to model checkpoint')
     parser.add_argument('--input-dir', type=str, default='data/images', help='Directory with input images')
@@ -19,6 +43,15 @@ def parse_args():
     return parser.parse_args()
 
 def main():
+    """Main inference function.
+    
+    This function:
+    1. Loads configuration and model checkpoint
+    2. Sets up model components (backbone, FPN, RPN, detection head)
+    3. Configures preprocessing and augmentation transforms
+    4. Runs inference on all images in the input directory
+    5. Saves visualization results with bounding boxes and scores
+    """
     # Parse arguments and load configuration
     args = parse_args()
     config = load_config(args.config)

@@ -1,9 +1,9 @@
 # Dataset Configuration
 dataset:
   name: "detection-datasets/coco"
-  tgt_categories: [16]
-  category_names: ["dog"]
-  filter_empty_boxes: true
+  tgt_categories: [6, 16]
+  category_names: ["train", "dog"]
+  load_from_cache_file: false
 
 # Training Configuration
 training:
@@ -91,12 +91,12 @@ augmentation:
 
 # Logging and Checkpoints
 logging:
-  train_log_filename: "train_metrics_resnet101.log"
-  val_log_filename: "val_metrics_resnet101.log"
+  train_log_filename: "train_metrics_resnet101_multi_class.log"
+  val_log_filename: "val_metrics_resnet101_multi_class.log"
   log_dir: "logs"
 
 checkpoints:
-  save_dir: "checkpoints_resnet101"
+  save_dir: "checkpoints_resnet101_multi_class"
   save_frequency: 1  # save every N epochs
   save_best: true
   metric_to_monitor: "AP_0.50"
