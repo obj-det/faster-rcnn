@@ -5,3 +5,11 @@ PKG-INFO
 *.txt
 *.log
 *.pth
+
+*.jpg
+*.jpeg
+*.png
+*.txt
+*.log
+*.pth
+*.json

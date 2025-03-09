@@ -1,3 +1,17 @@
+"""
+Configuration utilities for Faster R-CNN training and inference.
+
+This module provides utility functions for setting up all components of the Faster R-CNN
+training pipeline based on a YAML configuration file. It handles:
+- Dataset loading and preprocessing
+- Model initialization
+- Optimizer setup
+- Data augmentation
+- Logging configuration
+- Anchor generation
+- Checkpoint management
+"""
+
 import os
 import yaml
 import logging
@@ -20,50 +34,91 @@ import datasets
 from src.utils.data_utils import filter_bboxes_in_sample
 
 def load_config(config_path):
-    """Load configuration from YAML file"""
+    """Load configuration from YAML file.
+    
+    Args:
+        config_path (str): Path to the YAML configuration file.
+    
+    Returns:
+        dict: Configuration dictionary containing all parameters.
+    """
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     return config
 
 def setup_dataset(config):
-    """Set up and return datasets based on configuration"""
+    """Set up and return datasets based on configuration.
     
+    This function:
+    1. Loads the dataset specified in the config
+    2. Filters objects based on target categories
+    3. Balances positive and negative samples
+    4. Saves sample images for visualization
+    
+    Args:
+        config (dict): Configuration dictionary containing dataset parameters.
+    
+    Returns:
+        tuple: (filtered_train_ds, filtered_val_ds) containing the processed datasets.
+    """
     ds = datasets.load_dataset(config['dataset']['name'])
     train_ds = ds['train']
     val_ds = ds['val']
 
     tgt_categories = config['dataset']['tgt_categories']
+    load_from_cache_file = config['dataset']['load_from_cache_file']
     
-    # mapped_train_ds = train_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories), load_from_cache_file=False)
-    # mapped_val_ds = val_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories), load_from_cache_file=False)
-    mapped_train_ds = train_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories))
-    mapped_val_ds = val_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories))
+    # Filter bboxes based on target categories
+    mapped_train_ds = train_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories), load_from_cache_file=load_from_cache_file)
+    mapped_val_ds = val_ds.map(lambda sample: filter_bboxes_in_sample(sample, tgt_categories), load_from_cache_file=load_from_cache_file)
     
-    if config['dataset']['filter_empty_boxes']:
-        # filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
-        # filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=False)
-        filtered_train_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0)
-        filtered_val_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0)
-    else:
-        filtered_train_ds = mapped_train_ds
-        filtered_val_ds = mapped_val_ds
+    # Split into positive and negative samples
+    train_positive_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=load_from_cache_file)
+    train_negative_ds = mapped_train_ds.filter(lambda sample: len(sample["objects"]["bbox"]) == 0, load_from_cache_file=load_from_cache_file)
+    
+    # Balance negative samples (1:4 ratio)
+    neg_samples = min(len(train_positive_ds) // 4, len(train_negative_ds))
+    train_negative_ds_balanced = train_negative_ds.shuffle(seed=42).select(range(neg_samples))
 
+    filtered_train_ds = datasets.concatenate_datasets([train_positive_ds, train_negative_ds_balanced]).shuffle(seed=42)
+
+    # Repeat for validation set
+    val_positive_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) > 0, load_from_cache_file=load_from_cache_file)
+    val_negative_ds = mapped_val_ds.filter(lambda sample: len(sample["objects"]["bbox"]) == 0, load_from_cache_file=load_from_cache_file)
+
+    neg_samples = min(len(val_positive_ds) // 4, len(val_negative_ds))
+    val_negative_ds_balanced = val_negative_ds.shuffle(seed=42).select(range(neg_samples))
+
+    filtered_val_ds = datasets.concatenate_datasets([val_positive_ds, val_negative_ds_balanced]).shuffle(seed=42)
+
+    # Save sample images
     filtered_train_ds[0]['image'].save('sample_train.jpg')
     filtered_val_ds[0]['image'].save('sample_val.jpg')
 
-    # Count categories for determining num_classes
+    # Count categories for statistics
     category_to_count = defaultdict(int)
     for sample in filtered_train_ds:
         for obj in sample["objects"]["category"]:
             category_to_count[obj] += 1
     
     print(category_to_count)
+    print(len(filtered_train_ds), len(filtered_val_ds))
 
-    print(f"Found {len(category_to_count)} classes in dataset")
-    return filtered_train_ds, filtered_val_ds, category_to_count
+    return filtered_train_ds, filtered_val_ds
 
 def setup_preprocess_transform(config):
-    """Create a preprocessing transform that converts images to tensors and normalizes them."""
+    """Create a preprocessing transform pipeline.
+    
+    Creates a torchvision transform that:
+    1. Converts PIL images to tensors
+    2. Normalizes the tensors using mean and std from config
+    
+    Args:
+        config (dict): Configuration dictionary containing image normalization parameters.
+    
+    Returns:
+        transforms.Compose: Preprocessing transform pipeline.
+    """
     preprocess_pipeline = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize(
@@ -74,38 +129,38 @@ def setup_preprocess_transform(config):
     return preprocess_pipeline
 
 def setup_augmentation_transform(config, mode):
-    """Create an augmentation pipeline with Albumentations, including bbox support."""
+    """Create an augmentation pipeline with Albumentations.
+    
+    Sets up image augmentations based on the configuration and mode (train/test).
+    Supports various augmentations including:
+    - Horizontal/Vertical flips
+    - Random crops
+    - Brightness/Contrast adjustments
+    - Hue/Saturation adjustments
+    
+    Args:
+        config (dict): Configuration dictionary containing augmentation parameters.
+        mode (str): Either 'train' or 'test', determines which augmentations to apply.
+    
+    Returns:
+        A.Compose: Albumentations transform pipeline with bbox support.
+    """
     aug_transforms = []
 
     if mode == 'train':
-        # Apply horizontal flip if specified.
+        # Add training-specific augmentations
         if config['augmentation'].get('horizontal_flip_prob', 0) > 0:
             aug_transforms.append(A.HorizontalFlip(p=config['augmentation']['horizontal_flip_prob']))
 
-        # Apply vertical flip if specified.
         if config['augmentation'].get('vertical_flip_prob', 0) > 0:
             aug_transforms.append(A.VerticalFlip(p=config['augmentation']['vertical_flip_prob']))
 
-        # Use RandomResizedCrop instead of RandomCrop.
-        # This crop will take a random portion of the image (e.g., between 80% and 100% of the original area)
-        # and then resize it to the target shape.
-        # if config['augmentation'].get('random_crop_prob', 0) > 0:
-        #     height, width = config['image']['shape']
-        #     aug_transforms.append(A.RandomResizedCrop(
-        #         size=(height, width),
-        #         scale=(0.8, 1.0),
-        #         ratio=(0.75, 1.33),
-        #         p=config['augmentation']['random_crop_prob']
-        #     ))
-
-
-        # Brightness and contrast adjustment.
+        # Add color augmentations
         if config['augmentation'].get('brightness_range', []) or config['augmentation'].get('contrast_range', []):
             brightness_limit = (config['augmentation']['brightness_range'][0] - 1, config['augmentation']['brightness_range'][1] - 1)
             contrast_limit = (config['augmentation']['contrast_range'][0] - 1, config['augmentation']['contrast_range'][1] - 1)
             aug_transforms.append(A.RandomBrightnessContrast(brightness_limit=brightness_limit, contrast_limit=contrast_limit, p=0.5))
 
-        # Saturation and hue adjustment.
         if config['augmentation'].get('hue_range', []) or config['augmentation'].get('saturation_range', []):
             aug_transforms.append(A.HueSaturationValue(
                 hue_shift_limit=int(config['augmentation']['hue_range'][1]*100),
@@ -114,8 +169,7 @@ def setup_augmentation_transform(config, mode):
                 p=0.5
             ))
     
-    # Finally, if you want to ensure a consistent output size, you can also apply a Resize at the end.
-    # However, RandomResizedCrop already outputs images at the specified size.
+    # Always resize to target shape
     height, width = config['image']['shape']
     aug_transforms.append(A.Resize(height, width))
     
@@ -126,8 +180,23 @@ def setup_augmentation_transform(config, mode):
     return transform_pipeline
 
 def setup_models(config, num_classes, device, ckpt_path=None):
-    """Initialize and return models based on configuration"""
+    """Initialize and configure all model components.
     
+    Sets up the complete Faster R-CNN model architecture:
+    1. Backbone network (VGG16 or ResNet101)
+    2. Feature Pyramid Network (FPN)
+    3. Region Proposal Network (RPN)
+    4. Detection Head
+    
+    Args:
+        config (dict): Configuration dictionary containing model parameters.
+        num_classes (int): Number of object classes to detect.
+        device (torch.device): Device to place the models on.
+        ckpt_path (str, optional): Path to checkpoint file for loading weights.
+    
+    Returns:
+        tuple: (backbone, fpn, rpn, head) containing all model components.
+    """
     # Extract configuration
     backbone_config = config['model']['backbone']
     fpn_config = config['model']['fpn']
@@ -147,9 +216,10 @@ def setup_models(config, num_classes, device, ckpt_path=None):
         backbone = ResNetBackbone(output_layer_map).to(device)
     else:
         raise ValueError(f"Unsupported backbone: {config['backbone']['type']}")
+    
     fpn = FPN(in_channels=fpn_in_channels, out_channels=fpn_out_channels).to(device)
     
-    # Setup RPN parameters
+    # Setup RPN
     rpn_config = config['model']['rpn']
     num_anchors = len(rpn_config['anchor_box_ratios']) * len(rpn_config['anchor_box_scales'])
     rpn = RPN(in_channels=fpn_out_channels, num_anchors=num_anchors).to(device)
@@ -163,6 +233,7 @@ def setup_models(config, num_classes, device, ckpt_path=None):
         num_classes=num_classes
     ).to(device)
     
+    # Load checkpoint if provided
     if ckpt_path:
         ckpt = torch.load(ckpt_path, weights_only=False)
         backbone.load_state_dict(ckpt['backbone_state_dict'])
@@ -173,7 +244,17 @@ def setup_models(config, num_classes, device, ckpt_path=None):
     return backbone, fpn, rpn, head
 
 def setup_optimizer(config, models):
-    """Set up optimizer based on configuration"""
+    """Set up optimizer for all model components.
+    
+    Supports Adam and SGD optimizers with configurable parameters.
+    
+    Args:
+        config (dict): Configuration dictionary containing optimizer parameters.
+        models (tuple): (backbone, fpn, rpn, head) model components.
+    
+    Returns:
+        torch.optim.Optimizer: Configured optimizer.
+    """
     backbone, fpn, rpn, head = models
     
     if config['training']['optimizer'].lower() == 'adam':
@@ -201,12 +282,22 @@ def setup_optimizer(config, models):
     return optimizer
 
 def setup_logging(config):
-    """Set up logging based on configuration"""
+    """Set up training and validation loggers.
+    
+    Creates two separate loggers for training and validation metrics,
+    with configurable log directories and file names.
+    
+    Args:
+        config (dict): Configuration dictionary containing logging parameters.
+    
+    Returns:
+        tuple: (train_logger, val_logger) configured logging objects.
+    """
     log_dir = config['logging']['log_dir']
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     
-    # Get log filenames, use timestamp if not specified
+    # Get log filenames
     train_log_filename = config['logging'].get('train_log_filename')
     val_log_filename = config['logging'].get('val_log_filename')
     
@@ -237,7 +328,7 @@ def setup_logging(config):
     val_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     val_file_handler.setFormatter(val_formatter)
     val_logger.addHandler(val_file_handler)
-    val_logger.propagate = False  # Prevent propagation to root logger
+    val_logger.propagate = False
     
     return train_logger, val_logger
 

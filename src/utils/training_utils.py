@@ -1,3 +1,21 @@
+"""
+Training utilities for Faster R-CNN object detection.
+
+This module provides utilities for training the Faster R-CNN model:
+- Loss functions for RPN and detection head
+- IoU computation and bounding box transformations
+- Proposal matching and sampling strategies
+- Training and validation loops with metric tracking
+- Batch processing utilities
+
+The training process follows these key steps:
+1. Generate proposals using RPN
+2. Match proposals to ground truth boxes
+3. Sample positive and negative proposals
+4. Compute regression targets
+5. Train RPN and detection head with appropriate losses
+"""
+
 from tqdm import tqdm
 import torch
 import torch.nn.functional as F
@@ -109,6 +127,32 @@ def compute_iou_vectorized(proposals, gt_boxes):
     return ious  # shape: [N, M]
 
 def matching_and_sampling(all_proposals, all_scores, gt, num_samples, pos_iou_thresh=0.5, neg_iou_thresh=0.1, pos_fraction=0.25):
+    """Match proposals to ground truth boxes and sample for training.
+    
+    This function implements the proposal matching and sampling strategy:
+    1. For each batch, match proposals to ground truth boxes using IoU
+    2. Label proposals as positive if IoU > pos_iou_thresh
+    3. Label proposals as negative if IoU < neg_iou_thresh
+    4. Sample a balanced set of positive and negative proposals
+    5. Compute regression targets for positive proposals
+    
+    Args:
+        all_proposals (torch.Tensor): Proposals from RPN [N, 5] (batch_idx, x1, y1, x2, y2)
+        all_scores (torch.Tensor): Objectness scores from RPN [N, 2]
+        gt (torch.Tensor): Ground truth boxes and labels [M, 6] (batch_idx, x1, y1, x2, y2, label)
+        num_samples (int): Total number of proposals to sample per batch
+        pos_iou_thresh (float): IoU threshold for positive proposals (default: 0.5)
+        neg_iou_thresh (float): IoU threshold for negative proposals (default: 0.1)
+        pos_fraction (float): Target fraction of positive samples (default: 0.25)
+    
+    Returns:
+        tuple: (sampled_proposals, sampled_scores, sampled_labels, sampled_bbox_targets, sampled_indices)
+            - sampled_proposals: Selected proposals [K, 5]
+            - sampled_scores: Objectness scores for selected proposals [K, 2]
+            - sampled_labels: Classification labels for selected proposals [K]
+            - sampled_bbox_targets: Regression targets for selected proposals [K, 4]
+            - sampled_indices: Original indices of selected proposals [K]
+    """
     sampled_proposals_list = []
     batch_scores_list = []
     sampled_labels_list = []
@@ -131,8 +175,12 @@ def matching_and_sampling(all_proposals, all_scores, gt, num_samples, pos_iou_th
         N_b = batch_proposals.shape[0]
         M_b = gt_b.shape[0]
 
-        ious = compute_iou_vectorized(batch_proposals, gt_b)  # [N_b, M_b]
-        max_ious, gt_assignment = ious.max(dim=1)  # max_ious: [N_b], gt_assignment: [N_b]
+        if M_b == 0:
+            max_ious = torch.zeros(N_b, device=all_proposals.device)
+            gt_assignment = torch.zeros(N_b, dtype=torch.long, device=all_proposals.device)
+        else:
+            ious = compute_iou_vectorized(batch_proposals, gt_b)  # shape [N_b, M_b]
+            max_ious, gt_assignment = ious.max(dim=1)
 
         # Initialize labels for proposals (default background: label 0).
         labels_b = torch.zeros(N_b, dtype=torch.long, device=all_proposals.device)
@@ -215,6 +263,19 @@ def add_batch_idx_to_targets(targets):
     return new_targets
 
 def rpn_loss_fn(sampled_deltas, sampled_scores, sampled_labels, sampled_bbox_targets):
+    """Compute RPN losses for classification and box regression.
+    
+    Args:
+        sampled_deltas (torch.Tensor): Predicted box deltas [N, 5] (batch_idx, dx, dy, dw, dh)
+        sampled_scores (torch.Tensor): Predicted objectness scores [N, 2]
+        sampled_labels (torch.Tensor): Ground truth labels [N] (0: background, 1: foreground)
+        sampled_bbox_targets (torch.Tensor): Ground truth box deltas [N, 4]
+    
+    Returns:
+        tuple: (cls_loss, reg_loss)
+            - cls_loss: Binary cross-entropy loss for objectness prediction
+            - reg_loss: Smooth L1 loss for box delta prediction (only for positive anchors)
+    """
     cls_loss = F.cross_entropy(sampled_scores, sampled_labels)
     pos_inds = (sampled_labels == 1).nonzero(as_tuple=True)[0]
 
@@ -231,6 +292,20 @@ def rpn_loss_fn(sampled_deltas, sampled_scores, sampled_labels, sampled_bbox_tar
     return cls_loss, loss_reg
 
 def det_loss_fn(sampled_bbox_preds, sampled_scores, sampled_labels, sampled_bbox_targets, num_classes):
+    """Compute detection head losses for classification and box regression.
+    
+    Args:
+        sampled_bbox_preds (torch.Tensor): Predicted box deltas [N, num_classes * 4]
+        sampled_scores (torch.Tensor): Predicted class scores [N, num_classes + 1]
+        sampled_labels (torch.Tensor): Ground truth class labels [N]
+        sampled_bbox_targets (torch.Tensor): Ground truth box deltas [N, 4]
+        num_classes (int): Number of object classes (excluding background)
+    
+    Returns:
+        tuple: (cls_loss, reg_loss)
+            - cls_loss: Cross-entropy loss for class prediction
+            - reg_loss: Smooth L1 loss for box delta prediction (only for positive samples)
+    """
     if sampled_scores.size(0) == 0:
         cls_loss = torch.tensor(0.0, device=sampled_scores.device)
     else:
@@ -256,22 +331,33 @@ def det_loss_fn(sampled_bbox_preds, sampled_scores, sampled_labels, sampled_bbox
 
 def train_loop(epoch_num, accum_steps, dataloader, backbone, fpn, rpn, head, optimizer, device,
                layer_to_shifted_anchors, img_shape, num_classes, pooled_height, pooled_width, train_logger, config):
-    """
-    Unified training loop for the entire detection network using a single optimizer,
-    with logging of metrics to a file.
+    """Execute one epoch of training for the Faster R-CNN model.
+    
+    This function:
+    1. Processes batches of images and targets
+    2. Generates region proposals using RPN
+    3. Matches proposals to ground truth boxes
+    4. Computes RPN and detection head losses
+    5. Updates model parameters with gradient accumulation
+    6. Logs training metrics
     
     Args:
-        num_epochs (int): Number of epochs.
-        dataloader (DataLoader): Training data loader.
-        backbone (nn.Module): Backbone network.
-        fpn (nn.Module): Feature Pyramid Network.
-        rpn (nn.Module): Region Proposal Network.
-        head (nn.Module): Detection head.
-        optimizer (Optimizer): Single optimizer for all parameters.
-        device (torch.device): The computation device.
-        layer_to_shifted_anchors (dict): Precomputed shifted anchors per FPN level.
-        img_shape (tuple): The input image dimensions.
-        num_classes (int): Number of object classes.
+        epoch_num (int): Current epoch number
+        accum_steps (int): Number of steps for gradient accumulation
+        dataloader (DataLoader): Training data loader
+        backbone (nn.Module): Backbone network for feature extraction
+        fpn (nn.Module): Feature Pyramid Network
+        rpn (nn.Module): Region Proposal Network
+        head (nn.Module): Detection head for classification and box regression
+        optimizer (torch.optim.Optimizer): Model optimizer
+        device (torch.device): Device to run training on
+        layer_to_shifted_anchors (dict): Pre-computed anchors for each FPN level
+        img_shape (tuple): Image dimensions (height, width)
+        num_classes (int): Number of object classes (excluding background)
+        pooled_height (int): Height of ROI features after ROI Align
+        pooled_width (int): Width of ROI features after ROI Align
+        train_logger (logging.Logger): Logger for training metrics
+        config (dict): Configuration dictionary containing training parameters
     """
     backbone.train()
     fpn.train()
@@ -408,31 +494,36 @@ def train_loop(epoch_num, accum_steps, dataloader, backbone, fpn, rpn, head, opt
         train_logger.info(log_message)
 
 def validation_loop(epoch_num, dataloader, backbone, fpn, rpn, head, device,
-                        layer_to_shifted_anchors, img_shape, num_classes,
-                        pooled_height, pooled_width, val_logger, config, ap_iou_thresholds):
-    """
-    Validation loop for the detection network that computes mAP metrics only (no losses).
-    This loop runs inference on the validation set, collects predictions, and evaluates
-    detection performance using COCO metrics.
-
+                   layer_to_shifted_anchors, img_shape, num_classes,
+                   pooled_height, pooled_width, val_logger, config, ap_iou_thresholds):
+    """Execute one epoch of validation for the Faster R-CNN model.
+    
+    This function:
+    1. Processes validation batches in evaluation mode
+    2. Generates and filters region proposals
+    3. Computes detection scores and box coordinates
+    4. Accumulates predictions for COCO evaluation
+    5. Computes and logs AP metrics at different IoU thresholds
+    
     Args:
-        dataloader (DataLoader): Validation data loader.
-        backbone (nn.Module): Backbone network.
-        fpn (nn.Module): Feature Pyramid Network.
-        rpn (nn.Module): Region Proposal Network.
-        head (nn.Module): Detection head.
-        device (torch.device): The computation device.
-        layer_to_shifted_anchors (dict): Precomputed shifted anchors per FPN level.
-        img_shape (tuple): The input image dimensions.
-        num_classes (int): Number of object classes.
-        pooled_height (int): Height for ROI Align.
-        pooled_width (int): Width for ROI Align.
-        val_logger: Logger for validation metrics.
-        config (dict): Configuration dictionary containing RPN and head settings.
-        ap_iou_thresholds (list): List of IoU thresholds at which to compute AP metrics.
+        epoch_num (int): Current epoch number
+        dataloader (DataLoader): Validation data loader
+        backbone (nn.Module): Backbone network for feature extraction
+        fpn (nn.Module): Feature Pyramid Network
+        rpn (nn.Module): Region Proposal Network
+        head (nn.Module): Detection head for classification and box regression
+        device (torch.device): Device to run validation on
+        layer_to_shifted_anchors (dict): Pre-computed anchors for each FPN level
+        img_shape (tuple): Image dimensions (height, width)
+        num_classes (int): Number of object classes (excluding background)
+        pooled_height (int): Height of ROI features after ROI Align
+        pooled_width (int): Width of ROI features after ROI Align
+        val_logger (logging.Logger): Logger for validation metrics
+        config (dict): Configuration dictionary containing validation parameters
+        ap_iou_thresholds (list): IoU thresholds for computing AP metrics
     
     Returns:
-        dict: Dictionary containing AP metrics (mAP values).
+        dict: Dictionary containing AP metrics for each IoU threshold
     """
     backbone.eval()
     fpn.eval()
@@ -593,7 +684,7 @@ def validation_loop(epoch_num, dataloader, backbone, fpn, rpn, head, device,
                 if final_boxes.numel() == 0:
                     continue
 
-                final_keep = ops.nms(final_boxes, final_scores, 0.5)  # or any iou threshold you want
+                final_keep = ops.batched_nms(final_boxes, final_scores, final_labels, iou_threshold=0.5)
                 final_boxes = final_boxes[final_keep]
                 final_scores = final_scores[final_keep]
                 final_labels = final_labels[final_keep]

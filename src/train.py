@@ -1,3 +1,16 @@
+"""
+Training script for Faster R-CNN object detection model.
+
+This script handles the complete training pipeline for the Faster R-CNN model, including:
+- Data loading and preprocessing
+- Model setup and initialization
+- Training and validation loops
+- Checkpoint saving and logging
+- Augmentation visualization
+
+The script uses a configuration file to specify all training parameters and model architecture.
+"""
+
 import os
 import torch
 from torchvision.transforms.functional import to_pil_image
@@ -20,11 +33,29 @@ from src.utils.data_utils import DetectionDataset, collate_fn
 from src.utils.training_utils import train_loop, validation_loop
 
 def parse_args():
+    """Parse command line arguments.
+    
+    Returns:
+        argparse.Namespace: Parsed command line arguments containing:
+            - config (str): Path to the configuration file
+    """
     parser = argparse.ArgumentParser(description='Train object detection model')
     parser.add_argument('--config', type=str, default='config.yaml', help='Path to configuration file')
     return parser.parse_args()
 
 def main():
+    """Main training function.
+    
+    This function orchestrates the entire training process:
+    1. Sets up all necessary components (models, optimizers, datasets, etc.)
+    2. Runs the training loop for the specified number of epochs
+    3. Performs validation after each epoch
+    4. Saves checkpoints based on specified criteria
+    5. Generates sample visualizations of augmented images
+    
+    The function uses configuration parameters from a YAML file to control all aspects
+    of training, including model architecture, training hyperparameters, and logging settings.
+    """
     # Parse arguments and load configuration
     args = parse_args()
     config = load_config(args.config)
@@ -34,8 +65,8 @@ def main():
     print(f"Using device: {device}")
     
     # Setup datasets
-    filtered_train_ds, filtered_val_ds, category_to_count = setup_dataset(config)
-    num_classes = len(category_to_count)
+    filtered_train_ds, filtered_val_ds = setup_dataset(config)
+    num_classes = len(config['dataset']['tgt_categories'])
     print(f"Number of classes: {num_classes}")
     
     # Setup transforms and preprocessing
@@ -57,34 +88,27 @@ def main():
     train_dataset = DetectionDataset(filtered_train_ds, augmentation_transform_train, preprocess_transform)
     val_dataset = DetectionDataset(filtered_val_ds, augmentation_transform_test, preprocess_transform)
     
+    # Save sample augmented images for visualization
     save_dir = os.path.join('./', 'sample_images')
     os.makedirs(save_dir, exist_ok=True)
 
-    # Process and save 5 augmented train images.
+    # Process and save 5 augmented train images
     for i in range(5):
         sample = filtered_train_ds[i]
-        # Ensure the image is in RGB.
         image = np.array(sample["image"].convert("RGB"))
-        
-        # If you don't want to affect bboxes or if they aren't needed here,
-        # pass empty lists (the transform is still applied to the image).
         transformed = augmentation_transform_train(image=image, bboxes=[], category=[])
         aug_image = transformed["image"]
-        
-        # Convert numpy array back to PIL image.
         image_pil = Image.fromarray(aug_image)
         image_path = os.path.join(save_dir, f"train_image_{i}.png")
         image_pil.save(image_path)
         print(f"Saved {image_path}")
 
-    # Process and save 5 augmented val images.
+    # Process and save 5 augmented validation images
     for i in range(5):
         sample = filtered_val_ds[i]
         image = np.array(sample["image"].convert("RGB"))
-        
         transformed = augmentation_transform_test(image=image, bboxes=[], category=[])
         aug_image = transformed["image"]
-        
         image_pil = Image.fromarray(aug_image)
         image_path = os.path.join(save_dir, f"val_image_{i}.png")
         image_pil.save(image_path)
@@ -112,14 +136,14 @@ def main():
     for epoch in range(num_epochs):
         print(f"\nEpoch {epoch+1}/{num_epochs}")
         
-        # Training
+        # Training phase
         train_loop(
             epoch+1, config['training']['grad_accumulation_steps'], train_dataloader, backbone, fpn, rpn, head, optimizer, device,
             layer_to_shifted_anchors, img_shape, num_classes, 
             pooled_height, pooled_width, train_logger, config['model']
         )
         
-        # Validation        
+        # Validation phase
         metrics = validation_loop(
             epoch+1, val_dataloader, backbone, fpn, rpn, head, device,
             layer_to_shifted_anchors, img_shape, num_classes, 
@@ -130,14 +154,12 @@ def main():
         val_loss = metrics['avg_loss'] if 'avg_loss' in metrics else float('inf')
         ap_metrics = {k: v for k, v in metrics.items() if 'AP' in k}
         
-        # Save checkpoint based on configuration
+        # Handle checkpoint saving
         save_frequency = config['checkpoints']['save_frequency']
         save_best = config['checkpoints']['save_best']
-        
-        # Check if we should save based on frequency
         should_save_frequency = (epoch + 1) % save_frequency == 0
         
-        # Check if we should save based on best metrics
+        # Check if current model is the best so far
         metric_to_monitor = config['checkpoints']['metric_to_monitor']
         is_better = False
         
@@ -151,7 +173,7 @@ def main():
         
         should_save_best = save_best and is_better
         
-        # Save checkpoint if criteria met
+        # Save periodic checkpoint
         if should_save_frequency:
             checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch+1}.pth")
             torch.save({
@@ -167,6 +189,7 @@ def main():
             }, checkpoint_path)
             print(f"Saved checkpoint at {checkpoint_path}")
 
+        # Save best model checkpoint
         if should_save_best:
             checkpoint_path = os.path.join(checkpoint_dir, "model_best.pth")
             torch.save({
